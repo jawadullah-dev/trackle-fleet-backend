@@ -1,0 +1,196 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  SUPER_ADMIN
+  COMPANY_ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  PENDING
+}
+
+enum CompanyStatus {
+  ACTIVE
+  INACTIVE
+  PENDING
+}
+
+enum PlanType {
+  BASIC
+  PRO
+  ENTERPRISE
+}
+
+enum VehicleStatus {
+  ONLINE
+  OFFLINE
+}
+
+enum PaymentStatus {
+  PAID
+  UNPAID
+  PENDING
+  OVERDUE
+}
+
+enum MaintenanceStatus {
+  ON_TRACK
+  DUE_SOON
+  OVERDUE
+}
+
+enum ActivityType {
+  ALERT
+  WARNING
+  INFO
+  SUCCESS
+}
+
+model User {
+  id           String     @id @default(cuid())
+  name         String
+  email        String     @unique
+  password     String
+  role         Role       @default(COMPANY_ADMIN)
+  status       UserStatus @default(ACTIVE)
+  companyId    String?
+  company      Company?   @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  lastLogin    DateTime?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+  notifications Notification[]
+
+  @@index([companyId])
+  @@index([role])
+  @@index([status])
+}
+
+model Company {
+  id        String        @id @default(cuid())
+  name      String
+  logo      String?
+  plan      PlanType      @default(PRO)
+  status    CompanyStatus @default(ACTIVE)
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+  users     User[]
+  groups    VehicleGroup[]
+  vehicles  Vehicle[]
+  payments  Payment[]
+  activities Activity[]
+  notifications Notification[]
+
+  @@index([status])
+  @@index([name])
+}
+
+model VehicleGroup {
+  id          String    @id @default(cuid())
+  name        String
+  description String?
+  companyId   String
+  company     Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  vehicles    Vehicle[]
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([companyId, name])
+  @@index([companyId])
+}
+
+model Vehicle {
+  id           String        @id @default(cuid())
+  name         String
+  regNo        String        @unique
+  type         String
+  deviceId     String        @unique
+  currentKm    Int           @default(0)
+  status       VehicleStatus @default(OFFLINE)
+  latitude     Float?
+  longitude    Float?
+  companyId    String
+  company      Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  groupId      String?
+  group        VehicleGroup? @relation(fields: [groupId], references: [id], onDelete: SetNull)
+  lastUpdate   DateTime      @default(now())
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  maintenance  Maintenance[]
+
+  @@index([companyId])
+  @@index([groupId])
+  @@index([status])
+  @@index([name])
+}
+
+model Payment {
+  id        String        @id @default(cuid())
+  invoice   String        @unique
+  amount    Float
+  period    String
+  method    String?
+  status    PaymentStatus @default(PENDING)
+  dueDate   DateTime
+  paidAt    DateTime?
+  companyId String
+  company   Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  @@index([companyId])
+  @@index([status])
+}
+
+model Maintenance {
+  id             String            @id @default(cuid())
+  serviceType    String
+  intervalKm     Int
+  lastServiceKm  Int
+  nextServiceKm  Int
+  status         MaintenanceStatus @default(ON_TRACK)
+  vehicleId      String
+  vehicle        Vehicle           @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  @@index([vehicleId])
+  @@index([status])
+}
+
+model Activity {
+  id        String       @id @default(cuid())
+  title     String
+  detail    String
+  type      ActivityType @default(INFO)
+  companyId String?
+  company   Company?     @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  createdAt DateTime     @default(now())
+
+  @@index([companyId])
+  @@index([createdAt])
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  title     String
+  body      String
+  unread    Boolean  @default(true)
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  companyId String?
+  company   Company? @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([companyId])
+  @@index([unread])
+}
