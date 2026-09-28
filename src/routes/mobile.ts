@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { Prisma } from "@prisma/client";
 import { authenticate } from "../middleware/auth";
 import { asyncHandler } from "../utils/async-handler";
 import { sendSuccess } from "../utils/api-response";
@@ -171,12 +172,12 @@ router.get(
     const pagination = getPagination(req, { page: 1, limit: 20 });
     const companyId = user.companyId ?? undefined;
 
-    const where: Parameters<typeof prisma.notification.findMany>[0]["where"] = companyId
+    const where: Prisma.NotificationWhereInput = companyId
       ? { OR: [{ companyId }, { userId: user.sub }] }
       : {};
 
     if (req.query.unread === "true") {
-      Object.assign(where, { unread: true });
+      where.unread = true;
     }
 
     const [total, data] = await Promise.all([
