@@ -6,12 +6,11 @@ import { emitNotificationRead, emitAllNotificationsRead } from "./socket.service
 
 export async function getDashboardStats(user: JwtPayload) {
   if (user.role === Role.SUPER_ADMIN) {
-    const [totalCompanies, totalVehicles, onlineVehicles, offlineVehicles] =
+    const [totalCompanies, totalVehicles, onlineVehicles] =
       await Promise.all([
         prisma.company.count(),
         prisma.vehicle.count(),
         prisma.vehicle.count({ where: { status: "ONLINE" } }),
-        prisma.vehicle.count({ where: { status: "OFFLINE" } }),
       ]);
 
     return {
@@ -20,20 +19,15 @@ export async function getDashboardStats(user: JwtPayload) {
         { label: "Total Companies", value: totalCompanies, tone: "blue" },
         { label: "Total Vehicles", value: totalVehicles, tone: "sky" },
         { label: "Online Vehicles", value: onlineVehicles, tone: "green" },
-        { label: "Offline Vehicles", value: offlineVehicles, tone: "red" },
       ],
     };
   }
 
   const companyId = user.companyId ?? undefined;
-  const [totalVehicles, onlineVehicles, offlineVehicles, activeAlerts] =
+  const [totalVehicles, onlineVehicles] =
     await Promise.all([
       prisma.vehicle.count({ where: { companyId } }),
       prisma.vehicle.count({ where: { companyId, status: "ONLINE" } }),
-      prisma.vehicle.count({ where: { companyId, status: "OFFLINE" } }),
-      prisma.notification.count({
-        where: { companyId, unread: true },
-      }),
     ]);
 
   return {
@@ -41,8 +35,6 @@ export async function getDashboardStats(user: JwtPayload) {
     stats: [
       { label: "Total Vehicles", value: totalVehicles, tone: "blue" },
       { label: "Online Now", value: onlineVehicles, tone: "green" },
-      { label: "Offline", value: offlineVehicles, tone: "red" },
-      { label: "Active Alerts", value: activeAlerts, tone: "amber" },
     ],
   };
 }
