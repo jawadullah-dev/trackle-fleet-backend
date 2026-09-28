@@ -6,6 +6,7 @@ import { env } from "./config/env";
 import routes from "./routes";
 import mobileRoutes from "./routes/mobile";
 import { errorHandler, notFound } from "./middleware/auth";
+import { AppError } from "./utils/app-error";
 import { swaggerSpec } from "./config/swagger";
 
 const app = express();
@@ -25,17 +26,21 @@ app.use(
       const isDev = env.nodeEnv !== "production";
       if (
         !origin ||
-        allowedOrigins.includes(origin) ||
         isDev ||
+        allowedOrigins.includes(origin) ||
         origin.startsWith("http://localhost:") ||
-        origin.startsWith("http://127.0.0.1:")
+        origin.startsWith("http://127.0.0.1:") ||
+        origin.endsWith(".vercel.app") ||
+        origin.includes("trackle-fleet") ||
+        origin.includes("trackfleet")
       ) {
         return callback(null, true);
       }
-      return callback(new Error("Not allowed by CORS"));
+      return callback(new AppError(`Origin ${origin} not allowed by CORS`, 403));
     },
     credentials: true,
-    allowedHeaders: ["Content-Type", "Authorization"],
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
+    allowedHeaders: ["Content-Type", "Authorization", "Accept", "X-Requested-With"],
   })
 );
 app.use(express.json({ limit: "1mb" }));

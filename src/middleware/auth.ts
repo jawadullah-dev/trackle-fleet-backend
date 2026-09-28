@@ -43,8 +43,14 @@ export function errorHandler(
     return sendError(res, err.message, err.statusCode, err.errors);
   }
 
-  console.error(err);
-  return sendError(res, "Internal server error", 500);
+  const message = err instanceof Error ? err.message : "Internal server error";
+
+  if (message.includes("CORS") || message.includes("Not allowed by CORS")) {
+    return sendError(res, message, 403);
+  }
+
+  console.error("[ErrorHandler]", err);
+  return sendError(res, message, 500);
 }
 
 export function notFound(_req: Request, res: Response) {
