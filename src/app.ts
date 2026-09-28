@@ -2,7 +2,6 @@ import express from "express";
 import cors from "cors";
 import helmet from "helmet";
 import morgan from "morgan";
-import swaggerUi from "swagger-ui-express";
 import { env } from "./config/env";
 import routes from "./routes";
 import mobileRoutes from "./routes/mobile";
@@ -52,23 +51,49 @@ app.get("/", (_req, res) => {
   });
 });
 
-// ─── Swagger UI (works on Vercel) ────────────────────────────────────────────
-app.use(
-  "/api/docs",
-  swaggerUi.serve,
-  swaggerUi.setup(swaggerSpec, {
-    customSiteTitle: "TrackFleet API Docs",
-    customfavIcon: "",
-    swaggerOptions: {
-      persistAuthorization: true,
-      displayRequestDuration: true,
-      filter: true,
-      tryItOutEnabled: true,
-    },
-  })
-);
+// ─── Swagger UI via CDN (works on Vercel serverless) ────────────────────────
+// swagger-ui-express static assets don't work on Vercel (wrong MIME type).
+// Instead we serve a slim HTML page that loads Swagger UI from unpkg CDN.
+app.get("/api/docs", (_req, res) => {
+  res.setHeader("Content-Type", "text/html");
+  res.send(`<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TrackFleet API Docs</title>
+    <meta name="description" content="TrackFleet GPS Fleet Tracking API documentation" />
+    <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5.18.2/swagger-ui.css" />
+    <style>
+      body { margin: 0; background: #fafafa; }
+      .swagger-ui .topbar { background: #0f172a; }
+      .swagger-ui .topbar .download-url-wrapper { display: none; }
+    </style>
+  </head>
+  <body>
+    <div id="swagger-ui"></div>
+    <script src="https://unpkg.com/swagger-ui-dist@5.18.2/swagger-ui-bundle.js"></script>
+    <script src="https://unpkg.com/swagger-ui-dist@5.18.2/swagger-ui-standalone-preset.js"></script>
+    <script>
+      window.onload = function () {
+        SwaggerUIBundle({
+          url: "/api/docs.json",
+          dom_id: "#swagger-ui",
+          deepLinking: true,
+          presets: [SwaggerUIBundle.presets.apis, SwaggerUIStandalonePreset],
+          layout: "StandaloneLayout",
+          persistAuthorization: true,
+          displayRequestDuration: true,
+          filter: true,
+          tryItOutEnabled: true,
+        });
+      };
+    </script>
+  </body>
+</html>`);
+});
 
-// Expose raw OpenAPI JSON (useful for Postman import)
+// Expose raw OpenAPI JSON (for Swagger UI + Postman import)
 app.get("/api/docs.json", (_req, res) => {
   res.setHeader("Content-Type", "application/json");
   res.send(swaggerSpec);
