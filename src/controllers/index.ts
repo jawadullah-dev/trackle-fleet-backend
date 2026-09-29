@@ -12,6 +12,7 @@ import * as groupService from "../services/group.service";
 import * as paymentService from "../services/payment.service";
 import * as maintenanceService from "../services/maintenance.service";
 import * as dashboardService from "../services/dashboard.service";
+import * as historyService from "../services/history.service";
 import { createAndEmitNotification } from "../services/socket.service";
 import { AppError } from "../utils/app-error";
 
@@ -336,5 +337,28 @@ export const dashboardController = {
       "Test notification dispatched via Socket.IO",
       201
     );
+  }),
+};
+
+export const historyController = {
+  day: asyncHandler(async (req: AuthRequest, res) => {
+    const data = await historyService.getDayHistory(
+      requireUser(req),
+      String(req.query.vehicleId || ""),
+      String(req.query.date || "")
+    );
+    return sendSuccess(res, data, "History fetched");
+  }),
+  days: asyncHandler(async (req: AuthRequest, res) => {
+    const data = await historyService.getHistoryDays(
+      requireUser(req),
+      String(req.query.vehicleId || ""),
+      String(req.query.month || "")
+    );
+    return sendSuccess(res, data, "History days fetched");
+  }),
+  ingest: asyncHandler(async (req: AuthRequest, res) => {
+    const data = await historyService.ingestGpsPoints(requireUser(req), req.body);
+    return sendSuccess(res, data, "GPS points ingested", 201);
   }),
 };

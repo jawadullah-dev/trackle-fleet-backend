@@ -126,11 +126,26 @@ model Vehicle {
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
   maintenance  Maintenance[]
+  gpsPoints    GpsPoint[]
 
   @@index([companyId])
   @@index([groupId])
   @@index([status])
   @@index([name])
+}
+
+model GpsPoint {
+  id         String   @id @default(cuid())
+  vehicleId  String
+  vehicle    Vehicle  @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+  latitude   Float
+  longitude  Float
+  speed      Float?
+  recordedAt DateTime
+  createdAt  DateTime @default(now())
+
+  @@index([vehicleId, recordedAt])
+  @@index([recordedAt])
 }
 
 model Payment {

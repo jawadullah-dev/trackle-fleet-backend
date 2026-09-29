@@ -26,7 +26,14 @@ export function validate(schema: Joi.ObjectSchema, source: Source = "body") {
       );
     }
 
-    req[source] = value;
+    // Express 5: req.query / req.params are read-only getters
+    if (source === "body") {
+      req.body = value;
+    } else if (source === "params") {
+      Object.assign(req.params, value);
+    }
+    // query: validated in-place; controllers keep reading req.query strings
+
     next();
   };
 }

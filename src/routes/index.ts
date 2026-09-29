@@ -11,6 +11,7 @@ import {
   paymentController,
   maintenanceController,
   dashboardController,
+  historyController,
 } from "../controllers";
 import {
   loginSchema,
@@ -27,6 +28,9 @@ import {
   maintenanceSchema,
   maintenanceUpdateSchema,
   idParamSchema,
+  historyQuerySchema,
+  historyDaysQuerySchema,
+  gpsIngestSchema,
 } from "../validators/schemas";
 
 const router = Router();
@@ -179,6 +183,22 @@ router.delete(
   "/maintenance/:id",
   validate(idParamSchema, "params"),
   maintenanceController.remove
+);
+
+router.get(
+  "/history/days",
+  validate(historyDaysQuerySchema, "query"),
+  historyController.days
+);
+router.get(
+  "/history",
+  validate(historyQuerySchema, "query"),
+  historyController.day
+);
+router.post(
+  "/history/points",
+  validate(gpsIngestSchema),
+  historyController.ingest
 );
 
 export default router;

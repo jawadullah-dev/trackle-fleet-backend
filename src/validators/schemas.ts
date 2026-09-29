@@ -235,3 +235,54 @@ export const maintenanceUpdateSchema = Joi.object({
 export const idParamSchema = Joi.object({
   id: Joi.string().required(),
 });
+
+export const historyQuerySchema = Joi.object({
+  vehicleId: Joi.string().required().messages({
+    "any.required": "Vehicle is required",
+    "string.empty": "Vehicle is required",
+  }),
+  date: Joi.string()
+    .pattern(/^\d{4}-\d{2}-\d{2}$/)
+    .required()
+    .messages({
+      "string.pattern.base": "Date must be YYYY-MM-DD",
+      "any.required": "Date is required",
+    }),
+});
+
+export const historyDaysQuerySchema = Joi.object({
+  vehicleId: Joi.string().required().messages({
+    "any.required": "Vehicle is required",
+    "string.empty": "Vehicle is required",
+  }),
+  month: Joi.string()
+    .pattern(/^\d{4}-\d{2}$/)
+    .required()
+    .messages({
+      "string.pattern.base": "Month must be YYYY-MM",
+      "any.required": "Month is required",
+    }),
+});
+
+export const gpsIngestSchema = Joi.object({
+  vehicleId: Joi.string().required().messages({
+    "any.required": "Vehicle is required",
+    "string.empty": "Vehicle is required",
+  }),
+  points: Joi.array()
+    .items(
+      Joi.object({
+        latitude: Joi.number().min(-90).max(90).required(),
+        longitude: Joi.number().min(-180).max(180).required(),
+        speed: Joi.number().min(0).allow(null),
+        recordedAt: Joi.date().iso().required(),
+      })
+    )
+    .min(1)
+    .max(500)
+    .required()
+    .messages({
+      "array.min": "At least one GPS point is required",
+      "any.required": "Points are required",
+    }),
+});
