@@ -15,6 +15,24 @@ export const loginSchema = Joi.object({
   }),
 });
 
+export const profileUpdateSchema = Joi.object({
+  name: Joi.string().min(2).max(120).messages({
+    "string.min": "Name must be at least 2 characters",
+    "string.max": "Name must be at most 120 characters",
+  }),
+  email: Joi.string().email().messages({
+    "string.email": "Enter a valid email",
+  }),
+  currentPassword: Joi.string().min(6).allow("", null),
+  newPassword: Joi.string().min(6).allow("", null).messages({
+    "string.min": "New password must be at least 6 characters",
+  }),
+})
+  .or("name", "email", "newPassword")
+  .messages({
+    "object.missing": "Provide at least one field to update",
+  });
+
 export const companySchema = Joi.object({
   name: Joi.string().min(2).max(120).required().messages({
     "string.min": "Name must be at least 2 characters",

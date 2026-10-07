@@ -47,6 +47,48 @@ export async function getMe(userId: string) {
   return sanitizeUser(user);
 }
 
+export async function updateProfile(
+  userId: string,
+  body: {
+    name?: string;
+    email?: string;
+    currentPassword?: string;
+    newPassword?: string;
+  }
+) {
+  const existing = await prisma.user.findUnique({ where: { id: userId } });
+  if (!existing) throw new AppError("User not found", 404);
+
+  if (body.email && body.email.toLowerCase() !== existing.email) {
+    const taken = await prisma.user.findFirst({
+      where: { email: body.email.toLowerCase(), NOT: { id: userId } },
+    });
+    if (taken) throw new AppError("Email already registered", 409);
+  }
+
+  if (body.newPassword) {
+    if (!body.currentPassword) {
+      throw new AppError("Current password is required to set a new password", 400);
+    }
+    const valid = await comparePassword(body.currentPassword, existing.password);
+    if (!valid) throw new AppError("Current password is incorrect", 400);
+  }
+
+  const user = await prisma.user.update({
+    where: { id: userId },
+    data: {
+      ...(body.name ? { name: body.name } : {}),
+      ...(body.email ? { email: body.email.toLowerCase() } : {}),
+      ...(body.newPassword ? { password: await hashPassword(body.newPassword) } : {}),
+    },
+    include: {
+      company: { select: { id: true, name: true, status: true, plan: true } },
+    },
+  });
+
+  return sanitizeUser(user);
+}
+
 export async function ensureSuperAdmin() {
   const existing = await prisma.user.findUnique({
     where: { email: env.superAdminEmail.toLowerCase() },

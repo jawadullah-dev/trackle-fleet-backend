@@ -31,6 +31,11 @@ export const authController = {
     const data = await authService.getMe(user.sub);
     return sendSuccess(res, data);
   }),
+  updateProfile: asyncHandler(async (req: AuthRequest, res: Response) => {
+    const user = requireUser(req);
+    const data = await authService.updateProfile(user.sub, req.body);
+    return sendSuccess(res, data, "Profile updated");
+  }),
 };
 
 export const companyController = {

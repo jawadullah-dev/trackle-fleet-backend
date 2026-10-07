@@ -15,6 +15,7 @@ import {
 } from "../controllers";
 import {
   loginSchema,
+  profileUpdateSchema,
   companySchema,
   companyUpdateSchema,
   userSchema,
@@ -41,6 +42,12 @@ router.get("/health", (_req, res) => {
 
 router.post("/auth/login", validate(loginSchema), authController.login);
 router.get("/auth/me", authenticate, authController.me);
+router.patch(
+  "/auth/profile",
+  authenticate,
+  validate(profileUpdateSchema),
+  authController.updateProfile
+);
 
 router.use(authenticate);
 
