@@ -191,11 +191,15 @@ export async function listMapPins(actor: JwtPayload) {
     select: {
       id: true,
       name: true,
+      regNo: true,
+      type: true,
       status: true,
       latitude: true,
       longitude: true,
+      lastUpdate: true,
       company: { select: { name: true } },
     },
-    take: 200,
+    orderBy: [{ status: "asc" }, { name: "asc" }],
+    take: 500,
   });
 }

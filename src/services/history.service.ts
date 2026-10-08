@@ -2,6 +2,7 @@ import { prisma } from "../config/db";
 import { AppError } from "../utils/app-error";
 import { JwtPayload } from "../utils/auth";
 import { assertCompanyAccess } from "./company.service";
+import { getIO } from "./socket.service";
 
 function dayBounds(dateStr: string) {
   const start = new Date(`${dateStr}T00:00:00.000Z`);
@@ -187,7 +188,7 @@ export async function ingestGpsPoints(
 
   // Update vehicle live position to last point
   const last = data[data.length - 1];
-  await prisma.vehicle.update({
+  const updatedVehicle = await prisma.vehicle.update({
     where: { id: vehicle.id },
     data: {
       latitude: last.latitude,
@@ -195,7 +196,36 @@ export async function ingestGpsPoints(
       lastUpdate: last.recordedAt,
       status: "ONLINE",
     },
+    select: {
+      id: true,
+      name: true,
+      regNo: true,
+      type: true,
+      companyId: true,
+      latitude: true,
+      longitude: true,
+      status: true,
+      lastUpdate: true,
+    },
   });
+
+  const io = getIO();
+  if (io && updatedVehicle.latitude != null && updatedVehicle.longitude != null) {
+    const locationUpdate = {
+      id: updatedVehicle.id,
+      name: updatedVehicle.name,
+      regNo: updatedVehicle.regNo,
+      type: updatedVehicle.type,
+      status: updatedVehicle.status,
+      latitude: updatedVehicle.latitude,
+      longitude: updatedVehicle.longitude,
+      speed: last.speed ?? 0,
+      lastUpdate: updatedVehicle.lastUpdate.toISOString(),
+      companyId: updatedVehicle.companyId,
+    };
+    io.to(`company:${updatedVehicle.companyId}`).emit("vehicle:location", locationUpdate);
+    io.to("role:SUPER_ADMIN").emit("vehicle:location", locationUpdate);
+  }
 
   return { inserted: result.count, vehicleId: vehicle.id };
 }

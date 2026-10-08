@@ -104,9 +104,12 @@ app.get("/api/docs.json", (_req, res) => {
   res.send(swaggerSpec);
 });
 
+import gpsRoutes from "./routes/gps.routes";
+
 // ─── API Routes ──────────────────────────────────────────────────────────────
-app.use("/api", routes);
+app.use("/api/gps", gpsRoutes);
 app.use("/api/mobile", mobileRoutes);
+app.use("/api", routes);
 
 app.use(notFound);
 app.use(errorHandler);

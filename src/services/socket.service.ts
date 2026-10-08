@@ -83,6 +83,36 @@ export function initSocketServer(httpServer: HttpServer): Server {
       }
     }
 
+    /**
+     * GPS Device → Server → Admin Dashboard
+     *
+     * A GPS device (connected via the mobile app or direct socket) emits this
+     * event to update the vehicle's live position. The server:
+     *   1. Persists a GpsPoint row (for history replay)
+     *   2. Updates Vehicle.latitude/longitude/status/lastUpdate
+     *   3. Broadcasts vehicle:location to the company room so the admin map
+     *      refreshes in real-time without polling.
+     *
+     * Payload: { deviceId, latitude, longitude, speed?, recordedAt? }
+     */
+    socket.on(
+      "gps:update",
+      async (payload: {
+        deviceId: string;
+        latitude: number;
+        longitude: number;
+        speed?: number | null;
+        recordedAt?: string;
+      }) => {
+        try {
+          const { processGpsPing } = await import("./gps-ingest.service");
+          await processGpsPing(payload);
+        } catch (err) {
+          console.error("[Socket.IO] gps:update error:", err);
+        }
+      }
+    );
+
     socket.on("disconnect", (reason) => {
       console.log(
         `[Socket.IO] User disconnected: ${user.email} (${reason})`
@@ -90,7 +120,7 @@ export function initSocketServer(httpServer: HttpServer): Server {
     });
   });
 
-  console.log("[Socket.IO] Real-time notification server initialized");
+  console.log("[Socket.IO] Real-time notification + GPS tracking server initialized");
   return io;
 }
 
@@ -156,3 +186,4 @@ export async function createAndEmitNotification(data: {
   emitNotification(notification);
   return notification;
 }
+
