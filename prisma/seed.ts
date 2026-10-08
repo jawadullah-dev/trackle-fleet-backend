@@ -102,112 +102,112 @@ async function ensureDemoFleet() {
     data: [
       {
         name: "Truck Alpha",
-        regNo: "KHI-1001",
+        regNo: "ICT-1001",
         type: "Truck",
         deviceId: "DEV-ALPHA-01",
         currentKm: 12450,
         status: "ONLINE",
-        latitude: 24.8607,
-        longitude: 67.0011,
+        latitude: 33.6844,
+        longitude: 73.0479,
         companyId: company.id,
       },
       {
         name: "Van Beta",
-        regNo: "KHI-1002",
+        regNo: "ICT-1002",
         type: "Van",
         deviceId: "DEV-BETA-02",
         currentKm: 8320,
         status: "ONLINE",
-        latitude: 24.9056,
-        longitude: 67.0822,
+        latitude: 33.7182,
+        longitude: 73.0566,
         companyId: company.id,
       },
       {
         name: "Bike Gamma",
-        regNo: "KHI-1003",
+        regNo: "ICT-1003",
         type: "Bike",
         deviceId: "DEV-GAMMA-03",
         currentKm: 2100,
         status: "OFFLINE",
-        latitude: 24.9278,
-        longitude: 67.0332,
+        latitude: 33.6985,
+        longitude: 73.036,
         companyId: company.id,
       },
       {
         name: "Truck Delta",
-        regNo: "KHI-1004",
+        regNo: "ICT-1004",
         type: "Truck",
         deviceId: "DEV-DELTA-04",
         currentKm: 15600,
         status: "ONLINE",
-        latitude: 24.8520,
-        longitude: 67.0200,
+        latitude: 33.655,
+        longitude: 73.078,
         companyId: company.id,
       },
       {
         name: "Van Epsilon",
-        regNo: "KHI-1005",
+        regNo: "ICT-1005",
         type: "Van",
         deviceId: "DEV-EPSILON-05",
         currentKm: 7800,
         status: "ONLINE",
-        latitude: 24.8800,
-        longitude: 67.0600,
+        latitude: 33.6649,
+        longitude: 73.0868,
         companyId: company.id,
       },
       {
         name: "Bike Zeta",
-        regNo: "KHI-1006",
+        regNo: "ICT-1006",
         type: "Bike",
         deviceId: "DEV-ZETA-06",
         currentKm: 3200,
         status: "OFFLINE",
-        latitude: 24.9100,
-        longitude: 67.0900,
+        latitude: 33.642,
+        longitude: 73.068,
         companyId: company.id,
       },
       {
         name: "Truck Eta",
-        regNo: "KHI-1007",
+        regNo: "ICT-1007",
         type: "Truck",
         deviceId: "DEV-ETA-07",
         currentKm: 18900,
         status: "ONLINE",
-        latitude: 24.8400,
-        longitude: 67.0300,
+        latitude: 33.6705,
+        longitude: 73.125,
         companyId: company.id,
       },
       {
-        name: "Van Theta",
-        regNo: "KHI-1008",
-        type: "Van",
+        name: "Car Theta",
+        regNo: "ICT-1008",
+        type: "Car",
         deviceId: "DEV-THETA-08",
         currentKm: 9100,
         status: "ONLINE",
-        latitude: 24.8700,
-        longitude: 67.0700,
+        latitude: 33.729,
+        longitude: 73.075,
         companyId: company.id,
       },
       {
-        name: "Bike Iota",
-        regNo: "KHI-1009",
-        type: "Bike",
+        name: "Van Iota",
+        regNo: "ICT-1009",
+        type: "Van",
         deviceId: "DEV-IOTA-09",
         currentKm: 4500,
-        status: "OFFLINE",
-        latitude: 24.8950,
-        longitude: 67.1000,
+        status: "ONLINE",
+        latitude: 33.693,
+        longitude: 73.018,
         companyId: company.id,
       },
       {
         name: "Truck Kappa",
-        regNo: "KHI-1010",
+        regNo: "ICT-1010",
         type: "Truck",
         deviceId: "DEV-KAPPA-10",
         currentKm: 21200,
-        status: "ONLINE",
-        latitude: 24.8550,
-        longitude: 67.0400,
+        status: "OFFLINE",
+        latitude: 33.63,
+        longitude: 73.03,
         companyId: company.id,
       },
     ],
@@ -247,8 +247,8 @@ async function seedGpsTracks(companyId?: string) {
   }[] = [];
 
   for (const vehicle of vehicles) {
-    const baseLat = vehicle.latitude ?? 24.8607;
-    const baseLng = vehicle.longitude ?? 67.0011;
+    const baseLat = vehicle.latitude ?? 33.6844;
+    const baseLng = vehicle.longitude ?? 73.0479;
 
     // Generate tracks for last 30 days with multiple routes per day
     for (let dayOffset = 0; dayOffset <= 29; dayOffset++) {
@@ -295,18 +295,18 @@ async function seedGpsTracks(companyId?: string) {
 }
 
 async function seedActivities(companyId: string) {
-  const vehicleNames = ["Truck Alpha", "Van Beta", "Bike Gamma", "Truck Delta", "Van Epsilon", "Bike Zeta", "Truck Eta", "Van Theta", "Bike Iota", "Truck Kappa"];
-  const locations = ["North Karachi", "South Karachi", "Central Karachi", "Gulshan", "Clifton", "Saddar", "Liaquatabad", "Nazimabad", "Gulberg", "Johar"];
+  const vehicleNames = ["Truck Alpha", "Van Beta", "Bike Gamma", "Truck Delta", "Van Epsilon", "Bike Zeta", "Truck Eta", "Car Theta", "Van Iota", "Truck Kappa"];
+  const locations = ["Blue Area", "Zero Point", "F-6 Markaz", "G-9 Markaz", "Faizabad", "I-8 Expressway", "Park Road", "G-11", "I-10", "Chak Shahzad"];
 
   const activities = [
     {
       title: "New Vehicle Added",
-      detail: "Truck Alpha (KHI-1001) was added to the fleet",
+      detail: "Truck Alpha (ICT-1001) was added to the fleet",
       type: "SUCCESS" as const,
     },
     {
       title: "Vehicle Online",
-      detail: "Van Beta (KHI-1002) came online",
+      detail: "Van Beta (ICT-1002) came online in Blue Area",
       type: "INFO" as const,
     },
     {
@@ -316,17 +316,17 @@ async function seedActivities(companyId: string) {
     },
     {
       title: "Route Completed",
-      detail: "Bike Gamma completed delivery route to North Karachi",
+      detail: "Bike Gamma completed delivery route to G-9 Markaz",
       type: "SUCCESS" as const,
     },
     {
       title: "Speed Alert",
-      detail: "Truck Delta exceeded speed limit on N-5 Highway",
+      detail: "Truck Delta exceeded speed limit on Islamabad Expressway",
       type: "ALERT" as const,
     },
     {
       title: "New Vehicle Added",
-      detail: "Van Epsilon (KHI-1005) was added to the fleet",
+      detail: "Van Epsilon (ICT-1005) was added to the fleet",
       type: "SUCCESS" as const,
     },
     {
