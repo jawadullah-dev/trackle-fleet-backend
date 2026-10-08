@@ -114,19 +114,40 @@ export async function getHistoryDays(
       vehicleId,
       recordedAt: { gte: start, lt: end },
     },
-    select: { recordedAt: true },
+    select: {
+      latitude: true,
+      longitude: true,
+      recordedAt: true,
+    },
     orderBy: { recordedAt: "asc" },
   });
 
-  const days = new Set<string>();
+  const distancesByDay = new Map<
+    string,
+    { distanceKm: number; lastPoint: (typeof points)[number] }
+  >();
+
   for (const p of points) {
-    days.add(p.recordedAt.toISOString().slice(0, 10));
+    const day = p.recordedAt.toISOString().slice(0, 10);
+    const previous = distancesByDay.get(day);
+    distancesByDay.set(day, {
+      distanceKm:
+        (previous?.distanceKm ?? 0) +
+        (previous ? haversineKm(previous.lastPoint, p) : 0),
+      lastPoint: p,
+    });
   }
 
   return {
     vehicleId,
     month,
-    days: Array.from(days).sort(),
+    days: Array.from(distancesByDay.keys()).sort(),
+    distancesKm: Object.fromEntries(
+      Array.from(distancesByDay, ([day, data]) => [
+        day,
+        Math.round(data.distanceKm * 100) / 100,
+      ]),
+    ),
   };
 }
 
