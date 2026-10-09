@@ -142,8 +142,8 @@ export async function processGpsPing(ping: GpsPingInput): Promise<GpsPingResult>
       companyId: vehicle.companyId,
     };
 
+    // Real-time location is strictly scoped to the vehicle's company admin
     io.to(`company:${vehicle.companyId}`).emit("vehicle:location", locationUpdate);
-    io.to("role:SUPER_ADMIN").emit("vehicle:location", locationUpdate);
   }
 
   return {
