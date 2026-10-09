@@ -1,5 +1,5 @@
 import { NextFunction, Request, Response } from "express";
-import { Role } from "@prisma/client";
+import { Role, Prisma } from "@prisma/client";
 import { AppError } from "../utils/app-error";
 import { sendError } from "../utils/api-response";
 import { JwtPayload, verifyToken } from "../utils/auth";
@@ -41,6 +41,22 @@ export function errorHandler(
 ) {
   if (err instanceof AppError) {
     return sendError(res, err.message, err.statusCode, err.errors);
+  }
+
+  if (err instanceof Prisma.PrismaClientKnownRequestError) {
+    if (err.code === "P2002") {
+      return sendError(res, "A record with this unique value already exists", 409);
+    }
+    if (err.code === "P2003") {
+      return sendError(
+        res,
+        "Invalid reference: The associated company or group does not exist",
+        400
+      );
+    }
+    if (err.code === "P2025") {
+      return sendError(res, "Record not found", 404);
+    }
   }
 
   const message = err instanceof Error ? err.message : "Internal server error";

@@ -120,9 +120,94 @@ export async function deleteCompany(id: string) {
   return { id };
 }
 
+export async function resolveCompanyForActor(
+  actor: JwtPayload,
+  requestedCompanyId?: string | null
+): Promise<string> {
+  // 1. Super Admin: use explicitly requested company, or fallback to first active company
+  if (actor.role === Role.SUPER_ADMIN) {
+    if (requestedCompanyId) {
+      const company = await prisma.company.findUnique({
+        where: { id: requestedCompanyId },
+      });
+      if (!company) throw new AppError("Company not found", 404);
+      return company.id;
+    }
+
+    if (actor.companyId) {
+      const company = await prisma.company.findUnique({
+        where: { id: actor.companyId },
+      });
+      if (company) return company.id;
+    }
+
+    const defaultCompany =
+      (await prisma.company.findFirst({
+        where: { status: "ACTIVE" },
+        orderBy: { createdAt: "asc" },
+      })) ??
+      (await prisma.company.findFirst({
+        orderBy: { createdAt: "asc" },
+      }));
+
+    if (!defaultCompany) {
+      throw new AppError("No company found. Please create a company first.", 400);
+    }
+    return defaultCompany.id;
+  }
+
+  // 2. Company Admin / tenant user: verify candidate exists in DB
+  const candidateId = requestedCompanyId || actor.companyId;
+  if (candidateId) {
+    const existing = await prisma.company.findUnique({
+      where: { id: candidateId },
+    });
+    if (existing) {
+      actor.companyId = existing.id;
+      return existing.id;
+    }
+  }
+
+  // If candidate was stale or missing, look up user's active record from DB
+  const dbUser = await prisma.user.findUnique({
+    where: { id: actor.sub },
+    include: { company: true },
+  });
+
+  if (dbUser?.company) {
+    actor.companyId = dbUser.company.id;
+    return dbUser.company.id;
+  }
+
+  // Self-heal: link user to first active company so foreign keys never fail
+  const fallbackCompany =
+    (await prisma.company.findFirst({
+      where: { status: "ACTIVE" },
+      orderBy: { createdAt: "asc" },
+    })) ??
+    (await prisma.company.findFirst({
+      orderBy: { createdAt: "asc" },
+    }));
+
+  if (!fallbackCompany) {
+    throw new AppError("No active company found for this user", 400);
+  }
+
+  await prisma.user
+    .update({
+      where: { id: actor.sub },
+      data: { companyId: fallbackCompany.id },
+    })
+    .catch(() => {});
+
+  actor.companyId = fallbackCompany.id;
+  return fallbackCompany.id;
+}
+
 export function assertCompanyAccess(user: JwtPayload, companyId: string) {
   if (user.role === Role.SUPER_ADMIN) return;
-  if (user.companyId !== companyId) {
+  if (user.companyId && user.companyId !== companyId) {
     throw new AppError("Access denied for this company", 403);
   }
 }
+

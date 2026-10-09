@@ -9,6 +9,7 @@ import { getPagination } from "../utils/pagination";
 import * as authService from "../services/auth.service";
 import * as vehicleService from "../services/vehicle.service";
 import * as dashboardService from "../services/dashboard.service";
+import { resolveCompanyForActor } from "../services/company.service";
 import { prisma } from "../config/db";
 import bcrypt from "bcryptjs";
 
@@ -31,7 +32,7 @@ router.get(
   "/dashboard",
   asyncHandler(async (req: AuthRequest, res) => {
     const user = requireUser(req);
-    const companyId = user.companyId ?? undefined;
+    const companyId = await resolveCompanyForActor(user);
 
     const [userData, totalVehicles, onlineVehicles, offlineVehicles, totalGroups, recentAlerts] =
       await Promise.all([

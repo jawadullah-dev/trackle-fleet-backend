@@ -3,6 +3,7 @@ import { prisma } from "../config/db";
 import { JwtPayload } from "../utils/auth";
 import { buildMeta } from "../utils/pagination";
 import { emitNotificationRead, emitAllNotificationsRead } from "./socket.service";
+import { resolveCompanyForActor } from "./company.service";
 
 export async function getDashboardStats(user: JwtPayload) {
   if (user.role === Role.SUPER_ADMIN) {
@@ -23,7 +24,7 @@ export async function getDashboardStats(user: JwtPayload) {
     };
   }
 
-  const companyId = user.companyId ?? undefined;
+  const companyId = await resolveCompanyForActor(user);
   const [totalVehicles, onlineVehicles] =
     await Promise.all([
       prisma.vehicle.count({ where: { companyId } }),
@@ -47,8 +48,9 @@ export async function listActivities(
 ) {
   const where =
     user.role === Role.COMPANY_ADMIN
-      ? { companyId: user.companyId }
+      ? { companyId: await resolveCompanyForActor(user) }
       : {};
+
 
   const [total, data] = await Promise.all([
     prisma.activity.count({ where }),

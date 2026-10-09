@@ -3,7 +3,7 @@ import { prisma } from "../config/db";
 import { AppError } from "../utils/app-error";
 import { buildMeta } from "../utils/pagination";
 import { JwtPayload } from "../utils/auth";
-import { assertCompanyAccess } from "./company.service";
+import { assertCompanyAccess, resolveCompanyForActor } from "./company.service";
 
 type ListArgs = {
   page: number;
@@ -20,7 +20,7 @@ export async function listGroups(args: ListArgs) {
   const where: Prisma.VehicleGroupWhereInput = {};
 
   if (args.user.role === Role.COMPANY_ADMIN) {
-    where.companyId = args.user.companyId ?? undefined;
+    where.companyId = await resolveCompanyForActor(args.user);
   } else if (args.filters?.companyId && args.filters.companyId !== "ALL") {
     where.companyId = String(args.filters.companyId);
   }
@@ -62,7 +62,14 @@ export async function getGroup(id: string, actor: JwtPayload) {
     },
   });
   if (!group) throw new AppError("Vehicle group not found", 404);
-  assertCompanyAccess(actor, group.companyId);
+
+  if (actor.role !== Role.SUPER_ADMIN) {
+    const validCompanyId = await resolveCompanyForActor(actor);
+    if (group.companyId !== validCompanyId) {
+      throw new AppError("Access denied for this company", 403);
+    }
+  }
+
   return { ...group, count: group._count.vehicles };
 }
 
@@ -70,9 +77,7 @@ export async function createGroup(
   body: { name: string; description?: string | null; companyId?: string },
   actor: JwtPayload
 ) {
-  const companyId =
-    actor.role === Role.SUPER_ADMIN ? body.companyId : actor.companyId ?? undefined;
-  if (!companyId) throw new AppError("Company is required", 400);
+  const companyId = await resolveCompanyForActor(actor, body.companyId);
   assertCompanyAccess(actor, companyId);
 
   try {
@@ -88,8 +93,13 @@ export async function createGroup(
       },
     });
   } catch (error) {
-    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
-      throw new AppError("Group name already exists for this company", 409);
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      if (error.code === "P2002") {
+        throw new AppError("Group name already exists for this company", 409);
+      }
+      if (error.code === "P2003") {
+        throw new AppError("Referenced company does not exist", 400);
+      }
     }
     throw error;
   }
@@ -116,3 +126,4 @@ export async function deleteGroup(id: string, actor: JwtPayload) {
   await prisma.vehicleGroup.delete({ where: { id } });
   return { id };
 }
+
