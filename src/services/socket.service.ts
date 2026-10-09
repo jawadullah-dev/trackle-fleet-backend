@@ -28,7 +28,10 @@ export function initSocketServer(httpServer: HttpServer): Server {
           allowedOrigins.includes(origin) ||
           isDev ||
           origin.startsWith("http://localhost:") ||
-          origin.startsWith("http://127.0.0.1:")
+          origin.startsWith("http://127.0.0.1:") ||
+          origin.endsWith(".vercel.app") ||
+          origin.includes("trackle-fleet") ||
+          origin.includes("trackfleet")
         ) {
           return callback(null, true);
         }
@@ -37,7 +40,14 @@ export function initSocketServer(httpServer: HttpServer): Server {
       credentials: true,
       methods: ["GET", "POST", "PATCH"],
     },
-    transports: ["websocket", "polling"],
+    // Accept both polling and websocket — polling works on Vercel serverless.
+    // Clients connecting via polling-first will still get real-time events via
+    // HTTP long-polling. Pure WebSocket connections are also accepted for
+    // self-hosted / non-serverless environments.
+    transports: ["polling", "websocket"],
+    allowEIO3: true,
+    pingTimeout: 60000,
+    pingInterval: 25000,
   });
 
   io.use((socket: Socket, next) => {
