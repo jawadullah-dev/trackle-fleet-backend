@@ -3,7 +3,8 @@ import app from "./app";
 import { env } from "./config/env";
 import { ensureSuperAdmin } from "./services/auth.service";
 import { initSocketServer } from "./services/socket.service";
-import { startGpsTcpServer } from "./services/gps-tcp.service";
+import { startGpsTcpServer } from "./gps/tcpServer";
+import { startStaleVehicleChecker } from "./services/gps-ingest.service";
 
 async function bootstrap() {
   try {
@@ -16,11 +17,18 @@ async function bootstrap() {
   const httpServer = http.createServer(app);
   initSocketServer(httpServer);
 
-  // Start Hardware GPS Tracker TCP listener (for Coban GPS-403 / TK-403 trackers)
+  // Start Hardware GPS Tracker TCP listener (supports GT06, H02, Coban)
   try {
     startGpsTcpServer();
   } catch (err: any) {
     console.warn("Could not start GPS TCP server:", err.message);
+  }
+
+  // Start periodic offline updater for stale vehicles
+  try {
+    startStaleVehicleChecker();
+  } catch (err: any) {
+    console.warn("Could not start stale vehicle checker:", err.message);
   }
 
   httpServer.listen(env.port, () => {

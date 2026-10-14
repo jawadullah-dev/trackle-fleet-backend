@@ -282,6 +282,26 @@ export const historyDaysQuerySchema = Joi.object({
     }),
 });
 
+export const historyParamDateSchema = Joi.object({
+  date: Joi.string()
+    .pattern(/^\d{4}-\d{2}-\d{2}$/)
+    .required()
+    .messages({
+      "string.pattern.base": "Date must be YYYY-MM-DD",
+      "any.required": "Date is required",
+    }),
+});
+
+export const historyParamMonthSchema = Joi.object({
+  month: Joi.string()
+    .pattern(/^\d{4}-\d{2}$/)
+    .required()
+    .messages({
+      "string.pattern.base": "Month must be YYYY-MM",
+      "any.required": "Month is required",
+    }),
+});
+
 export const gpsIngestSchema = Joi.object({
   vehicleId: Joi.string().required().messages({
     "any.required": "Vehicle is required",

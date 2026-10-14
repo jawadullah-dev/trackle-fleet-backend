@@ -10,4 +10,6 @@ export const env = {
   superAdminEmail: process.env.SUPER_ADMIN_EMAIL ?? "super-admin@gmail.com",
   superAdminPassword: process.env.SUPER_ADMIN_PASSWORD ?? "admin@123",
   superAdminName: process.env.SUPER_ADMIN_NAME ?? "Super Admin",
+  gpsTcpPort: Number(process.env.GPS_TCP_PORT ?? 5023),
+  gpsDebug: process.env.GPS_DEBUG === "true" || process.env.GPS_DEBUG === "1" || !process.env.GPS_DEBUG,
 };

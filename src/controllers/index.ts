@@ -140,6 +140,10 @@ export const vehicleController = {
     });
     return sendSuccess(res, result.data, "Vehicles fetched", 200, result.meta);
   }),
+  live: asyncHandler(async (req: AuthRequest, res) => {
+    const data = await vehicleService.listLiveVehicles(requireUser(req));
+    return sendSuccess(res, data, "Live vehicle positions fetched");
+  }),
   get: asyncHandler(async (req: AuthRequest, res) => {
     const data = await vehicleService.getVehicle(String(req.params.id), requireUser(req));
     return sendSuccess(res, data);
@@ -166,6 +170,18 @@ export const vehicleController = {
   mapPins: asyncHandler(async (req: AuthRequest, res) => {
     const data = await vehicleService.listMapPins(requireUser(req));
     return sendSuccess(res, data);
+  }),
+  history: asyncHandler(async (req: AuthRequest, res) => {
+    const vehicleId = String(req.params.id);
+    const date = String(req.query.date || "");
+    const data = await historyService.getDayHistory(requireUser(req), vehicleId, date);
+    return sendSuccess(res, data, "Vehicle history fetched");
+  }),
+  historyDays: asyncHandler(async (req: AuthRequest, res) => {
+    const vehicleId = String(req.params.id);
+    const month = String(req.query.month || "");
+    const data = await historyService.getHistoryDays(requireUser(req), vehicleId, month);
+    return sendSuccess(res, data, "Vehicle history days fetched");
   }),
 };
 

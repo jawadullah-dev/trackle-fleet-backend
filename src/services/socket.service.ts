@@ -44,7 +44,7 @@ export function initSocketServer(httpServer: HttpServer): Server {
     // Clients connecting via polling-first will still get real-time events via
     // HTTP long-polling. Pure WebSocket connections are also accepted for
     // self-hosted / non-serverless environments.
-    transports: ["polling", "websocket"],
+    transports: ["websocket", "polling"],
     allowEIO3: true,
     pingTimeout: 60000,
     pingInterval: 25000,
@@ -85,25 +85,36 @@ export function initSocketServer(httpServer: HttpServer): Server {
 
     // Join role-specific room
     if (user.role === Role.SUPER_ADMIN) {
+      // Strictly isolate Super Admin: NO access to company tracking rooms
       socket.join("role:SUPER_ADMIN");
+      console.log(`[Socket.IO] SUPER_ADMIN ${user.email} joined platform admin room (tracking rooms blocked)`);
     } else if (user.role === Role.COMPANY_ADMIN) {
       socket.join("role:COMPANY_ADMIN");
       if (user.companyId) {
         socket.join(`company:${user.companyId}`);
+        console.log(`[Socket.IO] COMPANY_ADMIN joined tracking room: company:${user.companyId}`);
       }
     }
 
     /**
-     * GPS Device → Server → Admin Dashboard
+     * Prevent arbitrary room joining by SUPER_ADMIN or unauthorized users
+     */
+    socket.on("join", (room: string) => {
+      if (typeof room === "string" && room.startsWith("company:")) {
+        if (user.role === Role.SUPER_ADMIN) {
+          console.warn(`[Socket.IO] Blocked SUPER_ADMIN from joining tracking room: ${room}`);
+          return;
+        }
+        if (user.role === Role.COMPANY_ADMIN && room === `company:${user.companyId}`) {
+          socket.join(room);
+        }
+      }
+    });
+
+    /**
+     * GPS Device / Webhook / App → Server → Admin Dashboard
      *
-     * A GPS device (connected via the mobile app or direct socket) emits this
-     * event to update the vehicle's live position. The server:
-     *   1. Persists a GpsPoint row (for history replay)
-     *   2. Updates Vehicle.latitude/longitude/status/lastUpdate
-     *   3. Broadcasts vehicle:location to the company room so the admin map
-     *      refreshes in real-time without polling.
-     *
-     * Payload: { deviceId, latitude, longitude, speed?, recordedAt? }
+     * A GPS device or test script emits this event to update the vehicle live position.
      */
     socket.on(
       "gps:update",
@@ -112,6 +123,7 @@ export function initSocketServer(httpServer: HttpServer): Server {
         latitude: number;
         longitude: number;
         speed?: number | null;
+        heading?: number | null;
         recordedAt?: string;
       }) => {
         try {

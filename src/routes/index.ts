@@ -31,6 +31,8 @@ import {
   idParamSchema,
   historyQuerySchema,
   historyDaysQuerySchema,
+  historyParamDateSchema,
+  historyParamMonthSchema,
   gpsIngestSchema,
 } from "../validators/schemas";
 
@@ -57,7 +59,11 @@ router.get("/notifications", dashboardController.notifications);
 router.patch("/notifications/read-all", dashboardController.markAllRead);
 router.patch("/notifications/:id/read", validate(idParamSchema, "params"), dashboardController.markRead);
 router.post("/notifications/test", dashboardController.sendTestNotification);
-router.get("/vehicles/map-pins", vehicleController.mapPins);
+router.get(
+  "/vehicles/map-pins",
+  authorize(Role.COMPANY_ADMIN),
+  vehicleController.mapPins
+);
 
 router.get(
   "/companies",
@@ -111,19 +117,46 @@ router.delete(
   userController.remove
 );
 
-router.get("/vehicles", vehicleController.list);
-router.get("/vehicles/:id", validate(idParamSchema, "params"), vehicleController.get);
-router.post("/vehicles", validate(vehicleSchema), vehicleController.create);
+router.get("/vehicles/live", authorize(Role.COMPANY_ADMIN), vehicleController.live);
+router.get("/vehicles", authorize(Role.COMPANY_ADMIN), vehicleController.list);
+router.get(
+  "/vehicles/:id",
+  authorize(Role.COMPANY_ADMIN),
+  validate(idParamSchema, "params"),
+  vehicleController.get
+);
+router.post(
+  "/vehicles",
+  authorize(Role.COMPANY_ADMIN),
+  validate(vehicleSchema),
+  vehicleController.create
+);
 router.patch(
   "/vehicles/:id",
+  authorize(Role.COMPANY_ADMIN),
   validate(idParamSchema, "params"),
   validate(vehicleUpdateSchema),
   vehicleController.update
 );
 router.delete(
   "/vehicles/:id",
+  authorize(Role.COMPANY_ADMIN),
   validate(idParamSchema, "params"),
   vehicleController.remove
+);
+router.get(
+  "/vehicles/:id/history",
+  authorize(Role.COMPANY_ADMIN),
+  validate(idParamSchema, "params"),
+  validate(historyParamDateSchema, "query"),
+  vehicleController.history
+);
+router.get(
+  "/vehicles/:id/history/days",
+  authorize(Role.COMPANY_ADMIN),
+  validate(idParamSchema, "params"),
+  validate(historyParamMonthSchema, "query"),
+  vehicleController.historyDays
 );
 
 router.get("/groups", groupController.list);
@@ -194,16 +227,19 @@ router.delete(
 
 router.get(
   "/history/days",
+  authorize(Role.COMPANY_ADMIN),
   validate(historyDaysQuerySchema, "query"),
   historyController.days
 );
 router.get(
   "/history",
+  authorize(Role.COMPANY_ADMIN),
   validate(historyQuerySchema, "query"),
   historyController.day
 );
 router.post(
   "/history/points",
+  authorize(Role.COMPANY_ADMIN),
   validate(gpsIngestSchema),
   historyController.ingest
 );

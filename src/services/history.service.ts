@@ -1,8 +1,18 @@
+import { Role } from "@prisma/client";
 import { prisma } from "../config/db";
 import { AppError } from "../utils/app-error";
 import { JwtPayload } from "../utils/auth";
-import { assertCompanyAccess } from "./company.service";
+import { resolveCompanyForActor } from "./company.service";
 import { getIO } from "./socket.service";
+
+function ensureCompanyAdmin(user: JwtPayload) {
+  if (user.role === Role.SUPER_ADMIN) {
+    throw new AppError(
+      "Access denied: Super Admin cannot access vehicle trip history",
+      403
+    );
+  }
+}
 
 function dayBounds(dateStr: string) {
   const start = new Date(`${dateStr}T00:00:00.000Z`);
@@ -25,8 +35,11 @@ function monthBounds(monthStr: string) {
   return { start, end };
 }
 
-/** Approximate distance in km between two lat/lng points. */
-function haversineKm(a: { latitude: number; longitude: number }, b: { latitude: number; longitude: number }) {
+/** Approximate distance in km between two lat/lng points (Haversine formula). */
+export function haversineKm(
+  a: { latitude: number; longitude: number },
+  b: { latitude: number; longitude: number }
+) {
   const R = 6371;
   const toRad = (d: number) => (d * Math.PI) / 180;
   const dLat = toRad(b.latitude - a.latitude);
@@ -40,18 +53,26 @@ function haversineKm(a: { latitude: number; longitude: number }, b: { latitude: 
 }
 
 async function getAccessibleVehicle(vehicleId: string, actor: JwtPayload) {
+  ensureCompanyAdmin(actor);
+  const companyId = await resolveCompanyForActor(actor);
+
   const vehicle = await prisma.vehicle.findUnique({
     where: { id: vehicleId },
     select: {
       id: true,
       name: true,
       regNo: true,
+      type: true,
       status: true,
       companyId: true,
     },
   });
   if (!vehicle) throw new AppError("Vehicle not found", 404);
-  assertCompanyAccess(actor, vehicle.companyId);
+
+  if (vehicle.companyId !== companyId) {
+    throw new AppError("Access denied for this vehicle", 403);
+  }
+
   return vehicle;
 }
 
@@ -86,13 +107,18 @@ export async function getDayHistory(
     distanceKm += haversineKm(points[i - 1], points[i]);
   }
 
+  const roundedDistance = Math.round(distanceKm * 100) / 100;
+
   return {
     vehicle,
     date,
     points,
+    totalDistanceKm: roundedDistance,
+    distanceKm: roundedDistance,
+    pointCount: points.length,
     summary: {
       pointCount: points.length,
-      distanceKm: Math.round(distanceKm * 100) / 100,
+      distanceKm: roundedDistance,
       startAt: points[0]?.recordedAt ?? null,
       endAt: points[points.length - 1]?.recordedAt ?? null,
     },
@@ -213,18 +239,23 @@ export async function ingestGpsPoints(
   if (io && updatedVehicle.latitude != null && updatedVehicle.longitude != null) {
     const locationUpdate = {
       id: updatedVehicle.id,
+      vehicleId: updatedVehicle.id,
       name: updatedVehicle.name,
       regNo: updatedVehicle.regNo,
       type: updatedVehicle.type,
       status: updatedVehicle.status,
+      lat: updatedVehicle.latitude,
       latitude: updatedVehicle.latitude,
+      lng: updatedVehicle.longitude,
       longitude: updatedVehicle.longitude,
       speed: last.speed ?? 0,
+      heading: 0,
+      timestamp: updatedVehicle.lastUpdate.toISOString(),
       lastUpdate: updatedVehicle.lastUpdate.toISOString(),
       companyId: updatedVehicle.companyId,
     };
+    // Emit STRICTLY to company room
     io.to(`company:${updatedVehicle.companyId}`).emit("vehicle:location", locationUpdate);
-    io.to("role:SUPER_ADMIN").emit("vehicle:location", locationUpdate);
   }
 
   return { inserted: result.count, vehicleId: vehicle.id };
