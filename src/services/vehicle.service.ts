@@ -354,7 +354,7 @@ export async function listMapPins(actor: JwtPayload) {
   ensureCompanyAdmin(actor);
   const companyId = await resolveCompanyForActor(actor);
 
-  return prisma.vehicle.findMany({
+  const vehicles = await prisma.vehicle.findMany({
     where: { companyId },
     select: {
       id: true,
@@ -370,4 +370,10 @@ export async function listMapPins(actor: JwtPayload) {
     orderBy: [{ status: "asc" }, { name: "asc" }],
     take: 500,
   });
+
+  const { getVehicleMotionStatus } = require("./gps-ingest.service");
+  return vehicles.map((v) => ({
+    ...v,
+    motionStatus: getVehicleMotionStatus(v.id) || (v.status === "OFFLINE" ? "OFFLINE" : "PARKED"),
+  }));
 }

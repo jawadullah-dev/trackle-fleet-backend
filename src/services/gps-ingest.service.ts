@@ -9,6 +9,8 @@ export interface GpsPingInput {
   heading?: number | null;
   isValid?: boolean;
   recordedAt?: string | Date;
+  motionStatus?: "PARKED" | "IDLE" | "RUNNING" | "OFFLINE";
+  engineOn?: boolean;
 }
 
 export interface GpsPingResult {
@@ -46,6 +48,14 @@ export function haversineKm(
 // In-memory throttling map to prevent database point flooding: vehicleId -> timestamp (ms)
 const lastSavedPointTime = new Map<string, number>();
 const STORAGE_THROTTLE_MS = 3000; // Save at most 1 point per 3 seconds per vehicle
+
+// In-memory motion status cache: "PARKED" (Red) | "IDLE" (Blue) | "RUNNING" (Green) | "OFFLINE" (Grey)
+const latestMotionStatus = new Map<string, "PARKED" | "IDLE" | "RUNNING" | "OFFLINE">();
+
+export function getVehicleMotionStatus(vehicleId: string): "PARKED" | "IDLE" | "RUNNING" | "OFFLINE" {
+  return latestMotionStatus.get(vehicleId) || "PARKED";
+}
+
 
 // In-memory device-to-vehicle cache to prevent DB hammering on every ping
 interface CachedVehicle {
@@ -268,7 +278,10 @@ export async function processGpsPing(ping: GpsPingInput): Promise<GpsPingResult>
     console.warn(`[GPS Ingest] Transient DB error updating vehicle coordinates:`, err.message);
   }
 
-  // 5. Emit real-time WebSocket update strictly to company room
+  // 5. Update in-memory motion status and emit real-time WebSocket update strictly to company room
+  const resolvedMotionStatus = ping.motionStatus || (speed > 2 ? "RUNNING" : "PARKED");
+  latestMotionStatus.set(vehicle.id, resolvedMotionStatus);
+
   const io = getIO();
   if (io) {
     const locationUpdate = {
@@ -278,6 +291,8 @@ export async function processGpsPing(ping: GpsPingInput): Promise<GpsPingResult>
       regNo: vehicle.regNo,
       type: vehicle.type,
       status: "ONLINE" as const,
+      motionStatus: resolvedMotionStatus,
+      engineOn: ping.engineOn ?? (resolvedMotionStatus === "RUNNING" || resolvedMotionStatus === "IDLE"),
       lat,
       latitude: lat,
       lng,
@@ -298,6 +313,7 @@ export async function processGpsPing(ping: GpsPingInput): Promise<GpsPingResult>
         id: vehicle.id,
         vehicleId: vehicle.id,
         status: "ONLINE",
+        motionStatus: resolvedMotionStatus,
         timestamp: recordedAt.toISOString(),
       });
     }
@@ -357,12 +373,14 @@ export function startStaleVehicleChecker(intervalMs = 30000): void {
 
         const io = getIO();
         for (const v of staleVehicles) {
+          latestMotionStatus.set(v.id, "OFFLINE");
           console.log(`[GPS Ingest] Vehicle "${v.name}" (${v.id}) timed out (> ${timeoutMinutes}m) -> marked OFFLINE`);
           if (io) {
             io.to(`company:${v.companyId}`).emit("vehicle:status", {
               id: v.id,
               vehicleId: v.id,
               status: "OFFLINE",
+              motionStatus: "OFFLINE",
               timestamp: new Date().toISOString(),
             });
           }

@@ -63,6 +63,7 @@ async function getAccessibleVehicle(vehicleId: string, actor: JwtPayload) {
       name: true,
       regNo: true,
       type: true,
+      deviceId: true,
       status: true,
       companyId: true,
     },
@@ -87,7 +88,7 @@ export async function getDayHistory(
   const vehicle = await getAccessibleVehicle(vehicleId, actor);
   const { start, end } = dayBounds(date);
 
-  const points = await prisma.gpsPoint.findMany({
+  let points = await prisma.gpsPoint.findMany({
     where: {
       vehicleId,
       recordedAt: { gte: start, lt: end },
@@ -101,6 +102,55 @@ export async function getDayHistory(
       recordedAt: true,
     },
   });
+
+  // If few or no points recorded locally for this date, fetch historical trip from GPS51 cloud on demand
+  if (points.length < 5 && vehicle.deviceId) {
+    try {
+      const { fetchGps51HistoricalTracks } = require("./gps51-sync.service");
+      const records = await fetchGps51HistoricalTracks(vehicle.deviceId, date);
+      if (Array.isArray(records) && records.length > 0) {
+        const createData = records
+          .filter(
+            (r: any) =>
+              r.callat &&
+              r.callon &&
+              !isNaN(Number(r.callat)) &&
+              !isNaN(Number(r.callon))
+          )
+          .map((r: any) => ({
+            vehicleId,
+            latitude: Number(r.callat),
+            longitude: Number(r.callon),
+            speed: Number(r.speed || 0),
+            recordedAt: new Date(Number(r.updatetime || r.starttime || Date.now())),
+          }));
+
+        if (createData.length > 0) {
+          await prisma.gpsPoint.createMany({
+            data: createData,
+            skipDuplicates: true,
+          });
+
+          points = await prisma.gpsPoint.findMany({
+            where: {
+              vehicleId,
+              recordedAt: { gte: start, lt: end },
+            },
+            orderBy: { recordedAt: "asc" },
+            select: {
+              id: true,
+              latitude: true,
+              longitude: true,
+              speed: true,
+              recordedAt: true,
+            },
+          });
+        }
+      }
+    } catch (err: any) {
+      console.warn(`[History] Could not fetch GPS51 cloud tracks for ${vehicle.deviceId}:`, err.message);
+    }
+  }
 
   let distanceKm = 0;
   for (let i = 1; i < points.length; i++) {
@@ -133,7 +183,7 @@ export async function getHistoryDays(
   if (!vehicleId) throw new AppError("vehicleId is required", 400);
   if (!month) throw new AppError("month is required (YYYY-MM)", 400);
 
-  await getAccessibleVehicle(vehicleId, actor);
+  const vehicle = await getAccessibleVehicle(vehicleId, actor);
   const { start, end } = monthBounds(month);
 
   const points = await prisma.gpsPoint.findMany({
@@ -163,6 +213,12 @@ export async function getHistoryDays(
         (previous ? haversineKm(previous.lastPoint, p) : 0),
       lastPoint: p,
     });
+  }
+
+  // Always mark today's date in days list if within the requested month
+  const todayYmd = new Date().toISOString().slice(0, 10);
+  if (todayYmd.startsWith(month) && !distancesByDay.has(todayYmd)) {
+    distancesByDay.set(todayYmd, { distanceKm: 0.1, lastPoint: { latitude: 0, longitude: 0, recordedAt: new Date() } });
   }
 
   return {

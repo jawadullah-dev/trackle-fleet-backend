@@ -179,6 +179,25 @@ export async function pollGps51LivePositions(): Promise<void> {
       const speed = Number(r.speed || 0);
       const heading = Number(r.course || 0);
 
+      // Determine Engine & Motion State:
+      // Green = Engine On & Moving (RUNNING)
+      // Blue = Engine On & Stationary (IDLE)
+      // Red = Engine Off / Parked (PARKED)
+      // Grey = Lost connection (OFFLINE)
+      const strStatus = String(r.strstatusen || "").toLowerCase();
+      const rawStatus = Number(r.status || 0);
+      const isAccOn = (rawStatus & 1) === 1 || strStatus.includes("acc on") || strStatus.includes("running");
+      const isMoving = speed > 2 || Number(r.moving) === 1;
+
+      let motionStatus: "PARKED" | "IDLE" | "RUNNING" | "OFFLINE" = "PARKED";
+      if (isMoving) {
+        motionStatus = "RUNNING"; // Green: Moving with engine on
+      } else if (isAccOn) {
+        motionStatus = "IDLE"; // Blue: Engine on, but idle / stationary
+      } else {
+        motionStatus = "PARKED"; // Red: Engine is off, parked
+      }
+
       if (!isNaN(lat) && !isNaN(lng) && lat !== 0 && lng !== 0) {
         await processGpsPing({
           deviceId: devId,
@@ -186,6 +205,8 @@ export async function pollGps51LivePositions(): Promise<void> {
           longitude: lng,
           speed,
           heading,
+          motionStatus,
+          engineOn: isAccOn || isMoving,
           isValid: true,
           recordedAt: new Date(r.devicetime || Date.now()),
         });
@@ -221,3 +242,32 @@ export function startGps51SyncService(intervalSeconds = 15): void {
     syncVehiclesFromGps51();
   }, 30 * 60 * 1000);
 }
+
+export async function fetchGps51HistoricalTracks(
+  deviceId: string,
+  dateStr: string
+): Promise<any[]> {
+  try {
+    const token = await login();
+    const trackPayload = {
+      deviceid: deviceId,
+      begintime: `${dateStr} 00:00:00`,
+      endtime: `${dateStr} 23:59:59`,
+      timezone: 2,
+    };
+
+    const resp = await postJson(
+      `${GPS51_BASE_URL}?action=querytracks&token=${token}&serverid=${serverId}`,
+      trackPayload
+    );
+
+    if (resp && resp.status === 0 && Array.isArray(resp.records)) {
+      return resp.records;
+    }
+    return [];
+  } catch (err: any) {
+    console.warn(`[GPS51 Cloud] Could not fetch tracks for ${deviceId}:`, err.message);
+    return [];
+  }
+}
+
