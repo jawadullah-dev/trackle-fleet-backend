@@ -31,10 +31,10 @@ function getArg(flag, defaultValue) {
 const protocol = (getArg("--protocol", "jt808") || "jt808").toLowerCase();
 const defaultDeviceId =
   protocol === "h02"
-    ? "19210086602"
+    ? "868101063247081"
     : protocol === "jt808"
-    ? "019175645928"
-    : "868010341870381";
+    ? "868101063247081"
+    : "868101063247081";
 const deviceId = getArg("--deviceId", defaultDeviceId);
 const port = parseInt(getArg("--port", process.env.GPS_TCP_PORT || "5023"), 10);
 const host = getArg("--host", "127.0.0.1");
@@ -161,20 +161,16 @@ const CITIES = {
   islamabad: { lat: 33.6844, lng: 73.0479, name: "Islamabad, Pakistan" },
 };
 
-const cityArg = (getArg("--city", "") || "").toLowerCase();
-const selectedCity = CITIES[cityArg];
+const cityArg = (getArg("--city", "islamabad") || "islamabad").toLowerCase();
+const selectedCity = CITIES[cityArg] || CITIES.islamabad;
 
 // Path simulation origin
-let curLat = parseFloat(getArg("--lat", selectedCity ? selectedCity.lat : 52.5200));
-let curLng = parseFloat(getArg("--lng", selectedCity ? selectedCity.lng : 13.4050));
+let curLat = parseFloat(getArg("--lat", selectedCity.lat));
+let curLng = parseFloat(getArg("--lng", selectedCity.lng));
 let curHeading = 45;
 let curSpeed = 48; // km/h
 
-if (selectedCity) {
-  console.log(` Location  : Starting in ${selectedCity.name} (${curLat}, ${curLng})`);
-} else {
-  console.log(` Location  : Starting at (${curLat}, ${curLng})`);
-}
+console.log(` Location  : Starting in ${selectedCity.name} (${curLat}, ${curLng})`);
 
 let pointIndex = 0;
 let serialNumber = 1;

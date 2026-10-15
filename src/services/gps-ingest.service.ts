@@ -47,6 +47,123 @@ export function haversineKm(
 const lastSavedPointTime = new Map<string, number>();
 const STORAGE_THROTTLE_MS = 3000; // Save at most 1 point per 3 seconds per vehicle
 
+// In-memory device-to-vehicle cache to prevent DB hammering on every ping
+interface CachedVehicle {
+  id: string;
+  name: string;
+  regNo: string;
+  type: string;
+  companyId: string;
+  status: string;
+  latitude: number | null;
+  longitude: number | null;
+  currentKm: number;
+  cachedAt: number;
+}
+
+const vehicleDeviceCache = new Map<string, CachedVehicle>();
+const VEHICLE_CACHE_TTL_MS = 60000; // 60 seconds
+
+async function resolveVehicle(cleanDeviceId: string): Promise<CachedVehicle | null> {
+  const cached = vehicleDeviceCache.get(cleanDeviceId);
+  if (cached && Date.now() - cached.cachedAt < VEHICLE_CACHE_TTL_MS) {
+    return cached;
+  }
+
+  const candidateIds = [cleanDeviceId];
+  if (cleanDeviceId.startsWith("0")) {
+    candidateIds.push(cleanDeviceId.replace(/^0+/, ""));
+  } else {
+    candidateIds.push("0" + cleanDeviceId);
+  }
+
+  // Handle 15-digit IMEI vs 12-digit JT808 BCD phone number
+  if (cleanDeviceId.length === 15) {
+    candidateIds.push(cleanDeviceId.slice(-12));
+    candidateIds.push(cleanDeviceId.slice(-11));
+    candidateIds.push("0" + cleanDeviceId.slice(-11));
+  } else if (cleanDeviceId.length === 12) {
+    candidateIds.push("868" + cleanDeviceId);
+    candidateIds.push(cleanDeviceId.slice(-11));
+  }
+
+  // Helper with 1 retry for transient DB pool disconnects
+  async function queryDb() {
+    return prisma.vehicle.findFirst({
+      where: {
+        OR: [
+          ...candidateIds.map((id) => ({
+            deviceId: { equals: id, mode: "insensitive" as const },
+          })),
+          ...candidateIds.map((id) => ({
+            deviceId: { contains: id, mode: "insensitive" as const },
+          })),
+        ],
+      },
+      select: {
+        id: true,
+        name: true,
+        regNo: true,
+        type: true,
+        companyId: true,
+        status: true,
+        latitude: true,
+        longitude: true,
+        currentKm: true,
+      },
+    });
+  }
+
+  let vehicle: any = null;
+  try {
+    vehicle = await queryDb();
+  } catch (err) {
+    // Retry once if connection dropped
+    try {
+      vehicle = await queryDb();
+    } catch {
+      vehicle = null;
+    }
+  }
+
+  // If no vehicle matched by ID, check if there is only 1 vehicle in the database as fallback
+  if (!vehicle) {
+    try {
+      const totalVehicles = await prisma.vehicle.count();
+      if (totalVehicles === 1) {
+        vehicle = await prisma.vehicle.findFirst({
+          select: {
+            id: true,
+            name: true,
+            regNo: true,
+            type: true,
+            companyId: true,
+            status: true,
+            latitude: true,
+            longitude: true,
+            currentKm: true,
+          },
+        });
+        if (vehicle) {
+          console.log(
+            `[GPS Ingest] Auto-mapped hardware tracker ID "${cleanDeviceId}" to vehicle "${vehicle.name}" (${vehicle.id})`
+          );
+        }
+      }
+    } catch (err: any) {
+      console.warn(`[GPS Ingest] DB lookup fallback error:`, err.message);
+    }
+  }
+
+  if (vehicle) {
+    const entry: CachedVehicle = { ...vehicle, cachedAt: Date.now() };
+    vehicleDeviceCache.set(cleanDeviceId, entry);
+    return entry;
+  }
+
+  return null;
+}
+
 /**
  * Ingests a single GPS ping from any source:
  * - TCP GPS Tracker listener (H02 / GT06 / Coban)
@@ -78,32 +195,8 @@ export async function processGpsPing(ping: GpsPingInput): Promise<GpsPingResult>
     };
   }
 
-  // 2. Device-to-vehicle matching: look up vehicle by deviceId (supports phone number variants for JT808)
-  const candidateIds = [cleanDeviceId];
-  if (cleanDeviceId.startsWith("0")) {
-    candidateIds.push(cleanDeviceId.replace(/^0+/, ""));
-  } else {
-    candidateIds.push("0" + cleanDeviceId);
-  }
-
-  const vehicle = await prisma.vehicle.findFirst({
-    where: {
-      OR: candidateIds.map((id) => ({
-        deviceId: { equals: id, mode: "insensitive" },
-      })),
-    },
-    select: {
-      id: true,
-      name: true,
-      regNo: true,
-      type: true,
-      companyId: true,
-      status: true,
-      latitude: true,
-      longitude: true,
-      currentKm: true,
-    },
-  });
+  // 2. Resolve vehicle via cache + database
+  const vehicle = await resolveVehicle(cleanDeviceId);
 
   if (!vehicle) {
     // Log as unregistered device and ignore the data (do not crash, do not store)
@@ -153,18 +246,27 @@ export async function processGpsPing(ping: GpsPingInput): Promise<GpsPingResult>
 
   // 4. Update Vehicle live coordinates, status and last seen
   const wasOffline = vehicle.status === "OFFLINE";
-  await prisma.vehicle.update({
-    where: { id: vehicle.id },
-    data: {
-      latitude: lat,
-      longitude: lng,
-      status: "ONLINE",
-      lastUpdate: recordedAt,
-      currentKm: {
-        increment: kmIncrement,
+  vehicle.latitude = lat;
+  vehicle.longitude = lng;
+  vehicle.status = "ONLINE";
+  vehicle.cachedAt = Date.now();
+
+  try {
+    await prisma.vehicle.update({
+      where: { id: vehicle.id },
+      data: {
+        latitude: lat,
+        longitude: lng,
+        status: "ONLINE",
+        lastUpdate: recordedAt,
+        currentKm: {
+          increment: kmIncrement,
+        },
       },
-    },
-  });
+    });
+  } catch (err: any) {
+    console.warn(`[GPS Ingest] Transient DB error updating vehicle coordinates:`, err.message);
+  }
 
   // 5. Emit real-time WebSocket update strictly to company room
   const io = getIO();
@@ -220,16 +322,18 @@ let staleCheckerInterval: NodeJS.Timeout | null = null;
 export function startStaleVehicleChecker(intervalMs = 30000): void {
   if (staleCheckerInterval) return;
 
+  const timeoutMinutes = Math.max(1, Number(process.env.STALE_TIMEOUT_MINUTES || 10));
+
   staleCheckerInterval = setInterval(async () => {
     try {
-      const twoMinutesAgo = new Date(Date.now() - 2 * 60 * 1000);
+      const staleThreshold = new Date(Date.now() - timeoutMinutes * 60 * 1000);
 
-      // Find all vehicles currently ONLINE whose lastUpdate is older than 2 minutes
+      // Find all vehicles currently ONLINE whose lastUpdate is older than staleThreshold
       const staleVehicles = await prisma.vehicle.findMany({
         where: {
           status: "ONLINE",
           lastUpdate: {
-            lt: twoMinutesAgo,
+            lt: staleThreshold,
           },
         },
         select: {
@@ -253,7 +357,7 @@ export function startStaleVehicleChecker(intervalMs = 30000): void {
 
         const io = getIO();
         for (const v of staleVehicles) {
-          console.log(`[GPS Ingest] Vehicle "${v.name}" (${v.id}) timed out -> marked OFFLINE`);
+          console.log(`[GPS Ingest] Vehicle "${v.name}" (${v.id}) timed out (> ${timeoutMinutes}m) -> marked OFFLINE`);
           if (io) {
             io.to(`company:${v.companyId}`).emit("vehicle:status", {
               id: v.id,
@@ -269,7 +373,7 @@ export function startStaleVehicleChecker(intervalMs = 30000): void {
     }
   }, intervalMs);
 
-  console.log(`⏱️ Stale vehicle offline checker active (interval: ${intervalMs / 1000}s, threshold: 2m)`);
+  console.log(`⏱️ Stale vehicle offline checker active (interval: ${intervalMs / 1000}s, threshold: ${timeoutMinutes}m)`);
 }
 
 export function stopStaleVehicleChecker(): void {
