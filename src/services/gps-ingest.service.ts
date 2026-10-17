@@ -11,6 +11,8 @@ export interface GpsPingInput {
   recordedAt?: string | Date;
   motionStatus?: "PARKED" | "IDLE" | "RUNNING" | "OFFLINE";
   engineOn?: boolean;
+  /** When false, store/update coords but keep vehicle OFFLINE (e.g. GPS51 last-known). Default true. */
+  markOnline?: boolean;
 }
 
 export interface GpsPingResult {
@@ -54,6 +56,20 @@ const latestMotionStatus = new Map<string, "PARKED" | "IDLE" | "RUNNING" | "OFFL
 
 export function getVehicleMotionStatus(vehicleId: string): "PARKED" | "IDLE" | "RUNNING" | "OFFLINE" {
   return latestMotionStatus.get(vehicleId) || "PARKED";
+}
+
+/** Drop cached device→vehicle mapping after catalog sync / upsert. */
+export function invalidateVehicleDeviceCache(deviceId?: string): void {
+  if (!deviceId) {
+    vehicleDeviceCache.clear();
+    return;
+  }
+  const clean = String(deviceId).trim();
+  for (const key of vehicleDeviceCache.keys()) {
+    if (key === clean || key.includes(clean) || clean.includes(key)) {
+      vehicleDeviceCache.delete(key);
+    }
+  }
 }
 
 
@@ -217,7 +233,16 @@ export async function processGpsPing(ping: GpsPingInput): Promise<GpsPingResult>
     };
   }
 
-  const recordedAt = ping.recordedAt ? new Date(ping.recordedAt) : new Date();
+  const receivedAt = new Date();
+  let recordedAt = ping.recordedAt ? new Date(ping.recordedAt) : receivedAt;
+  if (Number.isNaN(recordedAt.getTime())) recordedAt = receivedAt;
+  // Clamp absurd device clocks; keep trail timestamps sane for history
+  if (recordedAt.getTime() > receivedAt.getTime() + 60_000) recordedAt = receivedAt;
+  if (recordedAt.getTime() < receivedAt.getTime() - 7 * 24 * 60 * 60 * 1000) {
+    // Older than 7 days — still store for history, but treat receive time for liveness
+  }
+
+  const markOnline = ping.markOnline !== false && ping.motionStatus !== "OFFLINE";
   const speed = typeof ping.speed === "number" && !isNaN(ping.speed) ? Math.max(0, ping.speed) : 0;
   const heading = typeof ping.heading === "number" && !isNaN(ping.heading) ? (Math.round(ping.heading) % 360 + 360) % 360 : 0;
 
@@ -231,12 +256,23 @@ export async function processGpsPing(ping: GpsPingInput): Promise<GpsPingResult>
     }
   }
 
-  // 3. Throttle storage: write to GpsPoint table at most once every few seconds
+  // 3. Persist trail points for history polylines.
+  // Always save the first point, then throttle — but still save when the vehicle
+  // moved meaningfully (>15m) so slow GPS51 polls never skip the route.
   const now = Date.now();
   const lastSaved = lastSavedPointTime.get(vehicle.id) || 0;
+  const movedEnough =
+    vehicle.latitude == null ||
+    vehicle.longitude == null ||
+    haversineKm(vehicle.latitude, vehicle.longitude, lat, lng) >= 0.015;
+  const shouldStorePoint =
+    lastSaved === 0 ||
+    now - lastSaved >= STORAGE_THROTTLE_MS ||
+    (movedEnough && now - lastSaved >= 1000);
+
   let savedPointId: string | undefined = undefined;
 
-  if (now - lastSaved >= STORAGE_THROTTLE_MS) {
+  if (shouldStorePoint) {
     try {
       const point = await prisma.gpsPoint.create({
         data: {
@@ -254,11 +290,13 @@ export async function processGpsPing(ping: GpsPingInput): Promise<GpsPingResult>
     }
   }
 
-  // 4. Update Vehicle live coordinates, status and last seen
+  // 4. Update Vehicle live coordinates / status.
+  // lastUpdate uses receive time so stale-checker is not fooled by old device clocks.
   const wasOffline = vehicle.status === "OFFLINE";
+  const nextStatus = markOnline ? "ONLINE" : "OFFLINE";
   vehicle.latitude = lat;
   vehicle.longitude = lng;
-  vehicle.status = "ONLINE";
+  vehicle.status = nextStatus;
   vehicle.cachedAt = Date.now();
 
   try {
@@ -267,8 +305,8 @@ export async function processGpsPing(ping: GpsPingInput): Promise<GpsPingResult>
       data: {
         latitude: lat,
         longitude: lng,
-        status: "ONLINE",
-        lastUpdate: recordedAt,
+        status: nextStatus,
+        lastUpdate: markOnline ? receivedAt : recordedAt,
         currentKm: {
           increment: kmIncrement,
         },
@@ -279,7 +317,9 @@ export async function processGpsPing(ping: GpsPingInput): Promise<GpsPingResult>
   }
 
   // 5. Update in-memory motion status and emit real-time WebSocket update strictly to company room
-  const resolvedMotionStatus = ping.motionStatus || (speed > 2 ? "RUNNING" : "PARKED");
+  const resolvedMotionStatus =
+    ping.motionStatus ||
+    (!markOnline ? "OFFLINE" : speed > 2 ? "RUNNING" : "PARKED");
   latestMotionStatus.set(vehicle.id, resolvedMotionStatus);
 
   const io = getIO();
@@ -290,7 +330,7 @@ export async function processGpsPing(ping: GpsPingInput): Promise<GpsPingResult>
       name: vehicle.name,
       regNo: vehicle.regNo,
       type: vehicle.type,
-      status: "ONLINE" as const,
+      status: nextStatus as "ONLINE" | "OFFLINE",
       motionStatus: resolvedMotionStatus,
       engineOn: ping.engineOn ?? (resolvedMotionStatus === "RUNNING" || resolvedMotionStatus === "IDLE"),
       lat,
@@ -299,22 +339,29 @@ export async function processGpsPing(ping: GpsPingInput): Promise<GpsPingResult>
       longitude: lng,
       speed: Math.round(speed),
       heading,
-      timestamp: recordedAt.toISOString(),
-      lastUpdate: recordedAt.toISOString(),
+      timestamp: receivedAt.toISOString(),
+      lastUpdate: receivedAt.toISOString(),
       companyId: vehicle.companyId,
     };
 
     // Scoped strictly to the company admin room
     io.to(`company:${vehicle.companyId}`).emit("vehicle:location", locationUpdate);
 
-    // If vehicle flipped from OFFLINE to ONLINE, emit vehicle:status update
-    if (wasOffline) {
+    if (wasOffline && markOnline) {
       io.to(`company:${vehicle.companyId}`).emit("vehicle:status", {
         id: vehicle.id,
         vehicleId: vehicle.id,
         status: "ONLINE",
         motionStatus: resolvedMotionStatus,
-        timestamp: recordedAt.toISOString(),
+        timestamp: receivedAt.toISOString(),
+      });
+    } else if (!wasOffline && !markOnline) {
+      io.to(`company:${vehicle.companyId}`).emit("vehicle:status", {
+        id: vehicle.id,
+        vehicleId: vehicle.id,
+        status: "OFFLINE",
+        motionStatus: "OFFLINE",
+        timestamp: receivedAt.toISOString(),
       });
     }
   }

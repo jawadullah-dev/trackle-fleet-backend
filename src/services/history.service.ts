@@ -4,6 +4,9 @@ import { AppError } from "../utils/app-error";
 import { JwtPayload } from "../utils/auth";
 import { resolveCompanyForActor } from "./company.service";
 import { getIO } from "./socket.service";
+import { parseGps51Time } from "./gps51-sync.service";
+
+const HISTORY_TZ = process.env.HISTORY_TIMEZONE || "Europe/Copenhagen";
 
 function ensureCompanyAdmin(user: JwtPayload) {
   if (user.role === Role.SUPER_ADMIN) {
@@ -14,13 +17,48 @@ function ensureCompanyAdmin(user: JwtPayload) {
   }
 }
 
+/** Offset (ms) such that local = utc + offset for the given instant in timeZone. */
+function timezoneOffsetMs(date: Date, timeZone: string): number {
+  const dtf = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hourCycle: "h23",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+  const parts = Object.fromEntries(
+    dtf
+      .formatToParts(date)
+      .filter((p) => p.type !== "literal")
+      .map((p) => [p.type, p.value])
+  ) as Record<string, string>;
+  const asUtc = Date.UTC(
+    Number(parts.year),
+    Number(parts.month) - 1,
+    Number(parts.day),
+    Number(parts.hour),
+    Number(parts.minute),
+    Number(parts.second)
+  );
+  return asUtc - date.getTime();
+}
+
+/** Calendar-day bounds in fleet local timezone (default Europe/Copenhagen). */
 function dayBounds(dateStr: string) {
-  const start = new Date(`${dateStr}T00:00:00.000Z`);
-  if (Number.isNaN(start.getTime())) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
     throw new AppError("Invalid date. Use YYYY-MM-DD", 400);
   }
-  const end = new Date(start);
-  end.setUTCDate(end.getUTCDate() + 1);
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const utcGuess = new Date(Date.UTC(y, m - 1, d, 0, 0, 0));
+  if (Number.isNaN(utcGuess.getTime())) {
+    throw new AppError("Invalid date. Use YYYY-MM-DD", 400);
+  }
+  const start = new Date(utcGuess.getTime() - timezoneOffsetMs(utcGuess, HISTORY_TZ));
+  const nextUtc = new Date(Date.UTC(y, m - 1, d + 1, 0, 0, 0));
+  const end = new Date(nextUtc.getTime() - timezoneOffsetMs(nextUtc, HISTORY_TZ));
   return { start, end };
 }
 
@@ -30,9 +68,29 @@ function monthBounds(monthStr: string) {
   const year = Number(match[1]);
   const month = Number(match[2]);
   if (month < 1 || month > 12) throw new AppError("Invalid month. Use YYYY-MM", 400);
-  const start = new Date(Date.UTC(year, month - 1, 1));
-  const end = new Date(Date.UTC(year, month, 1));
+  const { start } = dayBounds(
+    `${year}-${String(month).padStart(2, "0")}-01`
+  );
+  const nextYear = month === 12 ? year + 1 : year;
+  const nextMonth = month === 12 ? 1 : month + 1;
+  const { start: end } = dayBounds(
+    `${nextYear}-${String(nextMonth).padStart(2, "0")}-01`
+  );
   return { start, end };
+}
+
+function localYmd(date: Date, timeZone = HISTORY_TZ): string {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const map: Record<string, string> = {};
+  for (const p of parts) {
+    if (p.type !== "literal") map[p.type] = p.value;
+  }
+  return `${map.year}-${map.month}-${map.day}`;
 }
 
 /** Approximate distance in km between two lat/lng points (Haversine formula). */
@@ -88,48 +146,85 @@ export async function getDayHistory(
   const vehicle = await getAccessibleVehicle(vehicleId, actor);
   const { start, end } = dayBounds(date);
 
+  const pointSelect = {
+    id: true,
+    latitude: true,
+    longitude: true,
+    speed: true,
+    recordedAt: true,
+  } as const;
+
   let points = await prisma.gpsPoint.findMany({
     where: {
       vehicleId,
       recordedAt: { gte: start, lt: end },
     },
     orderBy: { recordedAt: "asc" },
-    select: {
-      id: true,
-      latitude: true,
-      longitude: true,
-      speed: true,
-      recordedAt: true,
-    },
+    select: pointSelect,
   });
 
-  // If few or no points recorded locally for this date, fetch historical trip from GPS51 cloud on demand
+  // Backfill from GPS51 cloud when local trail is thin, then persist into GpsPoint
+  // so later history views load from the database (polyline source of truth).
   if (points.length < 5 && vehicle.deviceId) {
     try {
       const { fetchGps51HistoricalTracks } = require("./gps51-sync.service");
       const records = await fetchGps51HistoricalTracks(vehicle.deviceId, date);
       if (Array.isArray(records) && records.length > 0) {
-        const createData = records
-          .filter(
-            (r: any) =>
-              r.callat &&
-              r.callon &&
-              !isNaN(Number(r.callat)) &&
-              !isNaN(Number(r.callon))
+        const existingKeys = new Set(
+          points.map(
+            (p) =>
+              `${p.recordedAt.getTime()}:${p.latitude.toFixed(5)}:${p.longitude.toFixed(5)}`
           )
-          .map((r: any) => ({
+        );
+
+        const createData: {
+          vehicleId: string;
+          latitude: number;
+          longitude: number;
+          speed: number;
+          recordedAt: Date;
+        }[] = [];
+
+        for (const r of records) {
+          const latitude = Number(r.callat ?? r.lat);
+          const longitude = Number(r.callon ?? r.lon ?? r.lng);
+          if (
+            !Number.isFinite(latitude) ||
+            !Number.isFinite(longitude) ||
+            (latitude === 0 && longitude === 0)
+          ) {
+            continue;
+          }
+          const recordedAt = parseGps51Time(
+            r.updatetime ?? r.devicetime ?? r.starttime ?? r.arrivedtime
+          );
+          if (Number.isNaN(recordedAt.getTime())) continue;
+          if (recordedAt < start || recordedAt >= end) continue;
+
+          const key = `${recordedAt.getTime()}:${latitude.toFixed(5)}:${longitude.toFixed(5)}`;
+          if (existingKeys.has(key)) continue;
+          existingKeys.add(key);
+
+          createData.push({
             vehicleId,
-            latitude: Number(r.callat),
-            longitude: Number(r.callon),
+            latitude,
+            longitude,
             speed: Number(r.speed || 0),
-            recordedAt: new Date(Number(r.updatetime || r.starttime || Date.now())),
-          }));
+            recordedAt,
+          });
+        }
 
         if (createData.length > 0) {
-          await prisma.gpsPoint.createMany({
-            data: createData,
-            skipDuplicates: true,
-          });
+          // Batch insert to avoid huge single payloads
+          const BATCH = 500;
+          for (let i = 0; i < createData.length; i += BATCH) {
+            await prisma.gpsPoint.createMany({
+              data: createData.slice(i, i + BATCH),
+            });
+          }
+          console.log(
+            `[History] Stored ${createData.length} GPS51 track points for ${vehicle.deviceId} on ${date}`
+          );
 
           points = await prisma.gpsPoint.findMany({
             where: {
@@ -137,18 +232,15 @@ export async function getDayHistory(
               recordedAt: { gte: start, lt: end },
             },
             orderBy: { recordedAt: "asc" },
-            select: {
-              id: true,
-              latitude: true,
-              longitude: true,
-              speed: true,
-              recordedAt: true,
-            },
+            select: pointSelect,
           });
         }
       }
     } catch (err: any) {
-      console.warn(`[History] Could not fetch GPS51 cloud tracks for ${vehicle.deviceId}:`, err.message);
+      console.warn(
+        `[History] Could not fetch GPS51 cloud tracks for ${vehicle.deviceId}:`,
+        err.message
+      );
     }
   }
 
@@ -205,7 +297,7 @@ export async function getHistoryDays(
   >();
 
   for (const p of points) {
-    const day = p.recordedAt.toISOString().slice(0, 10);
+    const day = localYmd(p.recordedAt);
     const previous = distancesByDay.get(day);
     distancesByDay.set(day, {
       distanceKm:
@@ -216,9 +308,12 @@ export async function getHistoryDays(
   }
 
   // Always mark today's date in days list if within the requested month
-  const todayYmd = new Date().toISOString().slice(0, 10);
+  const todayYmd = localYmd(new Date());
   if (todayYmd.startsWith(month) && !distancesByDay.has(todayYmd)) {
-    distancesByDay.set(todayYmd, { distanceKm: 0.1, lastPoint: { latitude: 0, longitude: 0, recordedAt: new Date() } });
+    distancesByDay.set(todayYmd, {
+      distanceKm: 0,
+      lastPoint: { latitude: 0, longitude: 0, recordedAt: new Date() },
+    });
   }
 
   return {

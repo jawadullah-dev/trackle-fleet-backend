@@ -2,8 +2,7 @@ import http from "http";
 import https from "https";
 import crypto from "crypto";
 import { prisma } from "../config/db";
-import { env } from "../config/env";
-import { processGpsPing } from "./gps-ingest.service";
+import { processGpsPing, invalidateVehicleDeviceCache } from "./gps-ingest.service";
 
 const GPS51_BASE_URL = "https://api.gps51.com/webapi";
 
@@ -12,6 +11,9 @@ let serverId = 0;
 let tokenExpiresAt = 0;
 let pollerTimer: NodeJS.Timeout | null = null;
 let isPolling = false;
+
+/** In-memory map of GPS51 deviceId -> TrackFleet vehicleId (avoids DB upsert every poll). */
+const ensuredDeviceMap = new Map<string, string>();
 
 function postJson(url: string, data: any): Promise<any> {
   return new Promise((resolve, reject) => {
@@ -28,7 +30,7 @@ function postJson(url: string, data: any): Promise<any> {
           "Content-Length": Buffer.byteLength(bodyStr),
           "User-Agent": "TrackFleet-Server/1.0",
         },
-        timeout: 10000,
+        timeout: 15000,
       },
       (res) => {
         let raw = "";
@@ -51,6 +53,127 @@ function postJson(url: string, data: any): Promise<any> {
     req.write(bodyStr);
     req.end();
   });
+}
+
+/** Parse GPS51 timestamps (ms, seconds, or "yyyy-MM-dd HH:mm:ss"). */
+export function parseGps51Time(value: unknown): Date {
+  if (value == null || value === "") return new Date();
+
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return new Date(value < 1e12 ? value * 1000 : value);
+  }
+
+  const raw = String(value).trim();
+  if (!raw) return new Date();
+
+  if (/^\d+$/.test(raw)) {
+    const n = Number(raw);
+    return new Date(n < 1e12 ? n * 1000 : n);
+  }
+
+  // GPS51 often returns "2026-03-09 23:14:18" (Europe/Copenhagen local)
+  const normalized = raw.includes("T") ? raw : raw.replace(" ", "T");
+  const asLocalDk = new Date(`${normalized}+02:00`);
+  if (!Number.isNaN(asLocalDk.getTime())) return asLocalDk;
+
+  const asIso = new Date(normalized);
+  if (!Number.isNaN(asIso.getTime())) return asIso;
+
+  return new Date();
+}
+
+function extractRegNo(fullName: string, fallback: string): string {
+  if (fullName.includes("-")) return fullName.split("-")[1].trim() || fallback;
+  if (fullName.includes("/")) return fullName.split("/")[1].trim() || fallback;
+  return fallback;
+}
+
+async function ensureDefaultCompany() {
+  const configuredId = process.env.GPS51_COMPANY_ID?.trim();
+  if (configuredId) {
+    const configured = await prisma.company.findUnique({ where: { id: configuredId } });
+    if (configured) return configured;
+  }
+
+  // Prefer a company that already has a COMPANY_ADMIN so live map stays tenant-scoped
+  const withAdmin = await prisma.company.findFirst({
+    where: { users: { some: { role: "COMPANY_ADMIN" } } },
+    orderBy: { createdAt: "asc" },
+  });
+  if (withAdmin) return withAdmin;
+
+  let company = await prisma.company.findFirst({ orderBy: { createdAt: "asc" } });
+  if (!company) {
+    company = await prisma.company.create({
+      data: {
+        id: "seed-company-default",
+        name: "Sjællands Autoteknik",
+        status: "ACTIVE",
+      },
+    });
+  }
+  return company;
+}
+
+/**
+ * Upsert a GPS51 device into TrackFleet so live pings are never dropped
+ * as "unregistered".
+ */
+async function ensureVehicleFromGps51(dev: {
+  deviceid: string | number;
+  devicename?: string;
+  rename?: boolean;
+}): Promise<string> {
+  const devId = String(dev.deviceid).trim();
+  const cached = ensuredDeviceMap.get(devId);
+  if (cached && !dev.rename) return cached;
+
+  const fullName = (dev.devicename || `Vehicle ${devId}`).trim();
+  let regNo = extractRegNo(fullName, devId);
+  const company = await ensureDefaultCompany();
+
+  // Prefer existing vehicle matched by deviceId (any case)
+  const existing = await prisma.vehicle.findFirst({
+    where: { deviceId: { equals: devId, mode: "insensitive" } },
+    select: { id: true, deviceId: true },
+  });
+  if (existing) {
+    if (dev.rename) {
+      await prisma.vehicle.update({
+        where: { id: existing.id },
+        data: { name: fullName },
+      });
+    }
+    ensuredDeviceMap.set(devId, existing.id);
+    invalidateVehicleDeviceCache(devId);
+    invalidateVehicleDeviceCache(existing.deviceId);
+    return existing.id;
+  }
+
+  // Avoid unique regNo collisions across devices
+  const regTaken = await prisma.vehicle.findUnique({
+    where: { regNo },
+    select: { id: true },
+  });
+  if (regTaken) {
+    regNo = `GPS-${devId}`;
+  }
+
+  const vehicle = await prisma.vehicle.create({
+    data: {
+      deviceId: devId,
+      name: fullName,
+      regNo,
+      type: "Car",
+      status: "OFFLINE",
+      companyId: company.id,
+    },
+    select: { id: true },
+  });
+
+  ensuredDeviceMap.set(devId, vehicle.id);
+  invalidateVehicleDeviceCache(devId);
+  return vehicle.id;
 }
 
 async function login(): Promise<string> {
@@ -77,7 +200,9 @@ async function login(): Promise<string> {
   authToken = res.token;
   serverId = res.serverid ?? 0;
   tokenExpiresAt = Date.now() + 12 * 60 * 60 * 1000;
-  console.log(`[GPS51 Cloud] Authenticated successfully as "${username}" (Token: ${authToken!.slice(0, 8)}..., ServerID: ${serverId})`);
+  console.log(
+    `[GPS51 Cloud] Authenticated as "${username}" (Token: ${authToken!.slice(0, 8)}..., ServerID: ${serverId})`
+  );
   return authToken!;
 }
 
@@ -85,17 +210,6 @@ export async function syncVehiclesFromGps51(): Promise<void> {
   try {
     const token = await login();
     const username = process.env.GPS51_USERNAME || "Nabil Boallal";
-
-    let company = await prisma.company.findFirst();
-    if (!company) {
-      company = await prisma.company.create({
-        data: {
-          id: "seed-company-default",
-          name: "Sjællands Autoteknik",
-          status: "ACTIVE",
-        },
-      });
-    }
 
     const monitorRes = await postJson(
       `${GPS51_BASE_URL}?action=querymonitorlist&token=${token}&serverid=${serverId}`,
@@ -106,42 +220,22 @@ export async function syncVehiclesFromGps51(): Promise<void> {
       if (monitorRes.status === 9903 || monitorRes.status === 9906) {
         authToken = null;
       }
+      console.warn(
+        `[GPS51 Cloud] querymonitorlist failed: status=${monitorRes.status}, cause=${monitorRes.cause}`
+      );
       return;
     }
 
-    const devices: any[] = [];
+    let count = 0;
     for (const group of monitorRes.groups || []) {
       for (const dev of group.devices || []) {
-        devices.push(dev);
+        await ensureVehicleFromGps51({ ...dev, rename: true });
+        count++;
       }
     }
 
-    for (const dev of devices) {
-      const devId = String(dev.deviceid);
-      const fullName = dev.devicename || `Vehicle ${devId}`;
-      let regNo = devId;
-      if (fullName.includes("-")) {
-        regNo = fullName.split("-")[1].trim();
-      } else if (fullName.includes("/")) {
-        regNo = fullName.split("/")[1].trim();
-      }
-
-      await prisma.vehicle.upsert({
-        where: { deviceId: devId },
-        update: {
-          name: fullName,
-        },
-        create: {
-          deviceId: devId,
-          name: fullName,
-          regNo,
-          type: "Car",
-          status: "ONLINE",
-          companyId: company.id,
-        },
-      });
-    }
-    console.log(`[GPS51 Cloud] Synced ${devices.length} vehicles to TrackFleet database`);
+    invalidateVehicleDeviceCache();
+    console.log(`[GPS51 Cloud] Synced ${count} vehicles to TrackFleet database`);
   } catch (err: any) {
     console.warn(`[GPS51 Cloud] Sync vehicles error:`, err.message);
   }
@@ -168,38 +262,60 @@ export async function pollGps51LivePositions(): Promise<void> {
       if (posRes.status === 9903 || posRes.status === 9906) {
         authToken = null;
       }
+      console.warn(
+        `[GPS51 Cloud] lastposition failed: status=${posRes.status}, cause=${posRes.cause}`
+      );
       return;
     }
 
     const records = Array.isArray(posRes.records) ? posRes.records : [];
+    let saved = 0;
+    let live = 0;
+
     for (const r of records) {
-      const devId = String(r.deviceid);
+      const devId = String(r.deviceid ?? "").trim();
+      if (!devId) continue;
+
+      // Always upsert so pings are never dropped as "unregistered"
+      await ensureVehicleFromGps51({
+        deviceid: devId,
+        devicename: r.devicename || r.deviceName,
+      });
+
       const lat = Number(r.callat);
       const lng = Number(r.callon);
       const speed = Number(r.speed || 0);
       const heading = Number(r.course || 0);
 
-      // Determine Engine & Motion State:
-      // Green = Engine On & Moving (RUNNING)
-      // Blue = Engine On & Stationary (IDLE)
-      // Red = Engine Off / Parked (PARKED)
-      // Grey = Lost connection (OFFLINE)
-      const strStatus = String(r.strstatusen || "").toLowerCase();
+      const strStatus = String(r.strstatusen || r.strstatus || "").toLowerCase();
       const rawStatus = Number(r.status || 0);
-      const isAccOn = (rawStatus & 1) === 1 || strStatus.includes("acc on") || strStatus.includes("running");
-      const isMoving = speed > 2 || Number(r.moving) === 1;
+      const isOffline =
+        strStatus.includes("offline") ||
+        strStatus.includes("expired") ||
+        strStatus.includes("out of service") ||
+        r.online === 0 ||
+        r.online === false ||
+        r.online === "0";
+      const isAccOn =
+        !isOffline &&
+        ((rawStatus & 1) === 1 ||
+          strStatus.includes("acc on") ||
+          strStatus.includes("running"));
+      const isMoving = !isOffline && (speed > 2 || Number(r.moving) === 1);
 
       let motionStatus: "PARKED" | "IDLE" | "RUNNING" | "OFFLINE" = "PARKED";
-      if (isMoving) {
-        motionStatus = "RUNNING"; // Green: Moving with engine on
+      if (isOffline) {
+        motionStatus = "OFFLINE";
+      } else if (isMoving) {
+        motionStatus = "RUNNING";
       } else if (isAccOn) {
-        motionStatus = "IDLE"; // Blue: Engine on, but idle / stationary
+        motionStatus = "IDLE";
       } else {
-        motionStatus = "PARKED"; // Red: Engine is off, parked
+        motionStatus = "PARKED";
       }
 
       if (!isNaN(lat) && !isNaN(lng) && lat !== 0 && lng !== 0) {
-        await processGpsPing({
+        const result = await processGpsPing({
           deviceId: devId,
           latitude: lat,
           longitude: lng,
@@ -208,9 +324,18 @@ export async function pollGps51LivePositions(): Promise<void> {
           motionStatus,
           engineOn: isAccOn || isMoving,
           isValid: true,
-          recordedAt: new Date(r.devicetime || Date.now()),
+          markOnline: !isOffline,
+          recordedAt: parseGps51Time(r.devicetime ?? r.updatetime ?? r.arrivedtime),
         });
+        live++;
+        if (result.pointId) saved++;
       }
+    }
+
+    if (records.length > 0) {
+      console.log(
+        `[GPS51 Cloud] Live poll: ${records.length} devices, ${live} with coords, ${saved} GpsPoints stored`
+      );
     }
   } catch (err: any) {
     console.warn(`[GPS51 Cloud] Polling error:`, err.message);
@@ -226,18 +351,17 @@ export function startGps51SyncService(intervalSeconds = 15): void {
     return;
   }
 
-  console.log(`[GPS51 Cloud] Starting live cloud sync service (polling every ${intervalSeconds}s)...`);
+  console.log(
+    `[GPS51 Cloud] Starting live cloud sync service (polling every ${intervalSeconds}s)...`
+  );
 
-  // Initial sync & poll
   syncVehiclesFromGps51().then(() => pollGps51LivePositions());
 
-  // Recurring position polling
   if (pollerTimer) clearInterval(pollerTimer);
   pollerTimer = setInterval(() => {
     pollGps51LivePositions();
   }, intervalSeconds * 1000);
 
-  // Periodic device catalog sync every 30 minutes
   setInterval(() => {
     syncVehiclesFromGps51();
   }, 30 * 60 * 1000);
@@ -264,10 +388,12 @@ export async function fetchGps51HistoricalTracks(
     if (resp && resp.status === 0 && Array.isArray(resp.records)) {
       return resp.records;
     }
+    if (resp?.status === 9903 || resp?.status === 9906) {
+      authToken = null;
+    }
     return [];
   } catch (err: any) {
     console.warn(`[GPS51 Cloud] Could not fetch tracks for ${deviceId}:`, err.message);
     return [];
   }
 }
-
