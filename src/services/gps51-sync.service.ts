@@ -375,9 +375,20 @@ export async function pollGps51LivePositions(): Promise<void> {
       const speed = Number(r.speed || 0);
       const heading = Number(r.course || 0);
 
+      // Fallback safely if devicetime is 0 so it never reverts to 1970
+      const rawTime =
+        r.devicetime && r.devicetime !== 0 && r.devicetime !== "0"
+          ? r.devicetime
+          : r.updatetime || r.arrivedtime || r.validpoistiontime;
+      const recordedAt = parseGps51Time(rawTime);
+
       const strStatus = String(r.strstatusen || r.strstatus || "").toLowerCase();
       const rawStatus = Number(r.status || 0);
+
+      // GPS51 marks devices offline after inactivity delay (> 2 hours without signal)
+      const isStale = Date.now() - recordedAt.getTime() > 2 * 60 * 60 * 1000;
       const isOffline =
+        isStale ||
         strStatus.includes("offline") ||
         strStatus.includes("expired") ||
         strStatus.includes("out of service") ||
@@ -403,12 +414,6 @@ export async function pollGps51LivePositions(): Promise<void> {
       }
 
       if (!isNaN(lat) && !isNaN(lng) && lat !== 0 && lng !== 0) {
-        // Fallback safely if devicetime is 0 so it never reverts to 1970
-        const rawTime =
-          r.devicetime && r.devicetime !== 0 && r.devicetime !== "0"
-            ? r.devicetime
-            : r.updatetime || r.arrivedtime || r.validpoistiontime;
-        const recordedAt = parseGps51Time(rawTime);
 
         // Real odometer from GPS51 (totaldistance or mileage in meters)
         const rawDistanceMeters = Number(r.totaldistance ?? r.mileage ?? 0);
