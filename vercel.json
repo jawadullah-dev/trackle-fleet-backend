@@ -1,5 +1,11 @@
 {
   "version": 2,
+  "crons": [
+    {
+      "path": "/api/cron/gps-sync",
+      "schedule": "0 0 * * *"
+    }
+  ],
   "functions": {
     "api/index.ts": {
       "maxDuration": 30,
@@ -7,7 +13,7 @@
     }
   },
   "routes": [
-    {
+     {
       "src": "/(.*)",
       "dest": "api/index.ts"
     }

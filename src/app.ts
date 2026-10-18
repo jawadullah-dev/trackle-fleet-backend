@@ -104,11 +104,28 @@ app.get("/api/docs.json", (_req, res) => {
   res.send(swaggerSpec);
 });
 
+// Top-level cron route for external ping services or Vercel cron
+app.get("/cron/gps-sync", async (_req, res) => {
+  try {
+    const { triggerGps51SyncIfNeeded, syncTodayDistancesFromGps51 } = require("./services/gps51-sync.service");
+    await triggerGps51SyncIfNeeded();
+    await syncTodayDistancesFromGps51();
+    res.json({
+      success: true,
+      message: "GPS51 sync executed successfully",
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || String(err) });
+  }
+});
+
 import gpsRoutes from "./routes/gps.routes";
 
 // ─── API Routes ──────────────────────────────────────────────────────────────
 app.use("/api/gps", gpsRoutes);
 app.use("/api/mobile", mobileRoutes);
+app.use("/api/v1", routes);
 app.use("/api", routes);
 
 app.use(notFound);

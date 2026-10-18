@@ -89,11 +89,17 @@ function extractRegNo(fullName: string, fallback: string): string {
   return fallback;
 }
 
+let cachedDefaultCompany: any = null;
+
 async function ensureDefaultCompany() {
+  if (cachedDefaultCompany) return cachedDefaultCompany;
   const configuredId = process.env.GPS51_COMPANY_ID?.trim();
   if (configuredId) {
     const configured = await prisma.company.findUnique({ where: { id: configuredId } });
-    if (configured) return configured;
+    if (configured) {
+      cachedDefaultCompany = configured;
+      return configured;
+    }
   }
 
   // Prefer a company that already has a COMPANY_ADMIN so live map stays tenant-scoped
@@ -101,7 +107,10 @@ async function ensureDefaultCompany() {
     where: { users: { some: { role: "COMPANY_ADMIN" } } },
     orderBy: { createdAt: "asc" },
   });
-  if (withAdmin) return withAdmin;
+  if (withAdmin) {
+    cachedDefaultCompany = withAdmin;
+    return withAdmin;
+  }
 
   let company = await prisma.company.findFirst({ orderBy: { createdAt: "asc" } });
   if (!company) {
@@ -113,7 +122,20 @@ async function ensureDefaultCompany() {
       },
     });
   }
+  cachedDefaultCompany = company;
   return company;
+}
+
+async function preloadDeviceCache(): Promise<void> {
+  if (ensuredDeviceMap.size >= 9) return;
+  try {
+    const vehicles = await prisma.vehicle.findMany({
+      select: { id: true, deviceId: true },
+    });
+    for (const v of vehicles) {
+      if (v.deviceId) ensuredDeviceMap.set(v.deviceId.trim(), v.id);
+    }
+  } catch {}
 }
 
 /**
@@ -271,10 +293,16 @@ export async function syncTodayDistancesFromGps51(): Promise<void> {
     );
     if (monitorRes.status !== 0) return;
 
+    const devList: string[] = [];
     for (const group of monitorRes.groups || []) {
       for (const dev of group.devices || []) {
         const devId = String(dev.deviceid).trim();
-        if (!devId) continue;
+        if (devId && !devList.includes(devId)) devList.push(devId);
+      }
+    }
+
+    await Promise.all(
+      devList.map(async (devId) => {
         try {
           const trackRes = await postJson(
             `${GPS51_BASE_URL}?action=querytracks&token=${token}&serverid=${serverId}`,
@@ -321,11 +349,34 @@ export async function syncTodayDistancesFromGps51(): Promise<void> {
         } catch {
           // Ignore individual track failure
         }
-      }
-    }
+      })
+    );
     console.log(`[GPS51 Cloud] Synced today distance for ${deviceTodayKmMap.size} devices`);
   } catch (err: any) {
     console.warn(`[GPS51 Cloud] Could not sync today distances:`, err.message);
+  }
+}
+
+let lastJitSyncTime = 0;
+const JIT_POLL_COOLDOWN_MS = 5000;
+
+/**
+ * Triggers an on-demand poll of GPS51 live positions if enough time has passed.
+ * Used for Vercel Serverless / JIT sync on incoming dashboard requests.
+ */
+export async function triggerGps51SyncIfNeeded(): Promise<void> {
+  const isEnabled = process.env.GPS51_ENABLED !== "false";
+  if (!isEnabled) return;
+  const now = Date.now();
+  if (now - lastJitSyncTime < JIT_POLL_COOLDOWN_MS) return;
+  lastJitSyncTime = now;
+  try {
+    if (deviceTodayKmMap.size === 0) {
+      syncTodayDistancesFromGps51().catch(() => {});
+    }
+    await pollGps51LivePositions();
+  } catch (err: any) {
+    console.warn("[Vercel JIT Sync] Poll error:", err?.message ?? err);
   }
 }
 
@@ -359,6 +410,8 @@ export async function pollGps51LivePositions(): Promise<void> {
     const records = Array.isArray(posRes.records) ? posRes.records : [];
     let saved = 0;
     let live = 0;
+
+    await preloadDeviceCache();
 
     for (const r of records) {
       const devId = String(r.deviceid ?? "").trim();
@@ -414,7 +467,6 @@ export async function pollGps51LivePositions(): Promise<void> {
       }
 
       if (!isNaN(lat) && !isNaN(lng) && lat !== 0 && lng !== 0) {
-
         // Real odometer from GPS51 (totaldistance or mileage in meters)
         const rawDistanceMeters = Number(r.totaldistance ?? r.mileage ?? 0);
         const totalKm =

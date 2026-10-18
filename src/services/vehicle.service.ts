@@ -4,6 +4,7 @@ import { AppError } from "../utils/app-error";
 import { buildMeta } from "../utils/pagination";
 import { JwtPayload } from "../utils/auth";
 import { assertCompanyAccess, resolveCompanyForActor } from "./company.service";
+import { triggerGps51SyncIfNeeded } from "./gps51-sync.service";
 
 type ListArgs = {
   page: number;
@@ -27,6 +28,7 @@ function ensureCompanyAdmin(user: JwtPayload) {
 
 export async function listVehicles(args: ListArgs) {
   ensureCompanyAdmin(args.user);
+  await triggerGps51SyncIfNeeded().catch(() => {});
   const companyId = await resolveCompanyForActor(args.user);
 
   const where: Prisma.VehicleWhereInput = {
@@ -75,6 +77,7 @@ export async function listVehicles(args: ListArgs) {
 
 export async function listLiveVehicles(actor: JwtPayload) {
   ensureCompanyAdmin(actor);
+  await triggerGps51SyncIfNeeded().catch(() => {});
   const companyId = await resolveCompanyForActor(actor);
 
   const rawVehicles = await prisma.vehicle.findMany({
@@ -100,6 +103,8 @@ export async function listLiveVehicles(actor: JwtPayload) {
     orderBy: [{ status: "asc" }, { name: "asc" }],
   });
 
+  const { getVehicleMotionStatus } = require("./gps-ingest.service");
+
   return rawVehicles.map((v) => ({
     id: v.id,
     name: v.name,
@@ -114,6 +119,9 @@ export async function listLiveVehicles(actor: JwtPayload) {
     voltage: v.voltage,
     signalPercent: v.signalPercent,
     satellites: v.satellites,
+    motionStatus:
+      getVehicleMotionStatus(v.id) ||
+      (v.status === "OFFLINE" ? "OFFLINE" : "PARKED"),
     lastLocation:
       v.latitude != null && v.longitude != null
         ? { lat: v.latitude, lng: v.longitude }
@@ -127,6 +135,7 @@ export async function listLiveVehicles(actor: JwtPayload) {
 
 export async function getVehicle(id: string, actor: JwtPayload) {
   ensureCompanyAdmin(actor);
+  await triggerGps51SyncIfNeeded().catch(() => {});
   const companyId = await resolveCompanyForActor(actor);
 
   const vehicle = await prisma.vehicle.findUnique({
@@ -362,6 +371,7 @@ export async function deleteVehicle(id: string, actor: JwtPayload) {
 
 export async function listMapPins(actor: JwtPayload) {
   ensureCompanyAdmin(actor);
+  await triggerGps51SyncIfNeeded().catch(() => {});
   const companyId = await resolveCompanyForActor(actor);
 
   const vehicles = await prisma.vehicle.findMany({

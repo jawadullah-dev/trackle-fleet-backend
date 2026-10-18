@@ -42,6 +42,21 @@ router.get("/health", (_req, res) => {
   res.json({ success: true, message: "TrackFleet API is running" });
 });
 
+router.get("/cron/gps-sync", async (_req, res) => {
+  try {
+    const { triggerGps51SyncIfNeeded, syncTodayDistancesFromGps51 } = require("../services/gps51-sync.service");
+    await triggerGps51SyncIfNeeded();
+    await syncTodayDistancesFromGps51();
+    res.json({
+      success: true,
+      message: "GPS51 sync executed successfully",
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err?.message || String(err) });
+  }
+});
+
 router.post("/auth/login", validate(loginSchema), authController.login);
 router.get("/auth/me", authenticate, authController.me);
 router.patch(

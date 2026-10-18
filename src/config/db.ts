@@ -8,7 +8,13 @@ const url =
   process.env.DATABASE_URL ||
   "";
 
-export const prisma = new PrismaClient({
-  datasources: url ? { db: { url } } : undefined,
-  log: ["error", "warn"],
-});
+const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
+
+export const prisma =
+  globalForPrisma.prisma ||
+  new PrismaClient({
+    datasources: url ? { db: { url } } : undefined,
+    log: ["error", "warn"],
+  });
+
+globalForPrisma.prisma = prisma;

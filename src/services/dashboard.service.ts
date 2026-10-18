@@ -4,8 +4,10 @@ import { JwtPayload } from "../utils/auth";
 import { buildMeta } from "../utils/pagination";
 import { emitNotificationRead, emitAllNotificationsRead } from "./socket.service";
 import { resolveCompanyForActor } from "./company.service";
+import { triggerGps51SyncIfNeeded } from "./gps51-sync.service";
 
 export async function getDashboardStats(user: JwtPayload) {
+  await triggerGps51SyncIfNeeded().catch(() => {});
   if (user.role === Role.SUPER_ADMIN) {
     const [totalCompanies, totalVehicles, onlineVehicles] =
       await Promise.all([
