@@ -13,6 +13,11 @@ export interface GpsPingInput {
   engineOn?: boolean;
   /** When false, store/update coords but keep vehicle OFFLINE (e.g. GPS51 last-known). Default true. */
   markOnline?: boolean;
+  currentKm?: number;
+  todayKm?: number;
+  voltage?: number;
+  signalPercent?: number;
+  satellites?: number;
 }
 
 export interface GpsPingResult {
@@ -84,6 +89,10 @@ interface CachedVehicle {
   latitude: number | null;
   longitude: number | null;
   currentKm: number;
+  todayKm?: number;
+  voltage?: number | null;
+  signalPercent?: number | null;
+  satellites?: number | null;
   cachedAt: number;
 }
 
@@ -136,6 +145,10 @@ async function resolveVehicle(cleanDeviceId: string): Promise<CachedVehicle | nu
         latitude: true,
         longitude: true,
         currentKm: true,
+        todayKm: true,
+        voltage: true,
+        signalPercent: true,
+        satellites: true,
       },
     });
   }
@@ -168,6 +181,10 @@ async function resolveVehicle(cleanDeviceId: string): Promise<CachedVehicle | nu
             latitude: true,
             longitude: true,
             currentKm: true,
+            todayKm: true,
+            voltage: true,
+            signalPercent: true,
+            satellites: true,
           },
         });
         if (vehicle) {
@@ -299,6 +316,24 @@ export async function processGpsPing(ping: GpsPingInput): Promise<GpsPingResult>
   vehicle.status = nextStatus;
   vehicle.cachedAt = Date.now();
 
+  const nextCurrentKm =
+    typeof ping.currentKm === "number" && ping.currentKm > 0
+      ? Math.round(ping.currentKm)
+      : (vehicle.currentKm || 0) + kmIncrement;
+  vehicle.currentKm = nextCurrentKm;
+  if (typeof ping.todayKm === "number") {
+    vehicle.todayKm = ping.todayKm;
+  }
+  if (typeof ping.voltage === "number") {
+    vehicle.voltage = ping.voltage;
+  }
+  if (typeof ping.signalPercent === "number") {
+    vehicle.signalPercent = ping.signalPercent;
+  }
+  if (typeof ping.satellites === "number") {
+    vehicle.satellites = ping.satellites;
+  }
+
   try {
     await prisma.vehicle.update({
       where: { id: vehicle.id },
@@ -307,9 +342,15 @@ export async function processGpsPing(ping: GpsPingInput): Promise<GpsPingResult>
         longitude: lng,
         status: nextStatus,
         lastUpdate: markOnline ? receivedAt : recordedAt,
-        currentKm: {
-          increment: kmIncrement,
-        },
+        ...(typeof ping.currentKm === "number" && ping.currentKm > 0
+          ? { currentKm: Math.round(ping.currentKm) }
+          : kmIncrement > 0
+          ? { currentKm: { increment: kmIncrement } }
+          : {}),
+        ...(typeof ping.todayKm === "number" ? { todayKm: ping.todayKm } : {}),
+        ...(typeof ping.voltage === "number" ? { voltage: ping.voltage } : {}),
+        ...(typeof ping.signalPercent === "number" ? { signalPercent: ping.signalPercent } : {}),
+        ...(typeof ping.satellites === "number" ? { satellites: ping.satellites } : {}),
       },
     });
   } catch (err: any) {
@@ -339,6 +380,11 @@ export async function processGpsPing(ping: GpsPingInput): Promise<GpsPingResult>
       longitude: lng,
       speed: Math.round(speed),
       heading,
+      currentKm: nextCurrentKm,
+      todayKm: typeof ping.todayKm === "number" ? ping.todayKm : (vehicle.todayKm || 0),
+      voltage: typeof ping.voltage === "number" ? ping.voltage : vehicle.voltage,
+      signalPercent: typeof ping.signalPercent === "number" ? ping.signalPercent : vehicle.signalPercent,
+      satellites: typeof ping.satellites === "number" ? ping.satellites : vehicle.satellites,
       timestamp: receivedAt.toISOString(),
       lastUpdate: receivedAt.toISOString(),
       companyId: vehicle.companyId,

@@ -115,6 +115,10 @@ model Vehicle {
   type         String
   deviceId     String        @unique
   currentKm    Int           @default(0)
+  todayKm      Float         @default(0)
+  voltage      Float?
+  signalPercent Int?
+  satellites   Int?
   status       VehicleStatus @default(OFFLINE)
   latitude     Float?
   longitude    Float?

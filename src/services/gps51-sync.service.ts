@@ -57,9 +57,10 @@ function postJson(url: string, data: any): Promise<any> {
 
 /** Parse GPS51 timestamps (ms, seconds, or "yyyy-MM-dd HH:mm:ss"). */
 export function parseGps51Time(value: unknown): Date {
-  if (value == null || value === "") return new Date();
+  if (value == null || value === "" || value === 0 || value === "0") return new Date();
 
   if (typeof value === "number" && Number.isFinite(value)) {
+    if (value <= 0) return new Date();
     return new Date(value < 1e12 ? value * 1000 : value);
   }
 
@@ -241,6 +242,93 @@ export async function syncVehiclesFromGps51(): Promise<void> {
   }
 }
 
+/** In-memory cache of deviceId -> today's calculated distance (km) */
+const deviceTodayKmMap = new Map<string, number>();
+let lastTodaySyncDate = "";
+
+/**
+ * Syncs today's distance for all devices from GPS51 cloud history tracks.
+ */
+export async function syncTodayDistancesFromGps51(): Promise<void> {
+  try {
+    const token = await login();
+    const todayStr = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Europe/Copenhagen",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date());
+
+    if (lastTodaySyncDate !== todayStr) {
+      deviceTodayKmMap.clear();
+      lastTodaySyncDate = todayStr;
+    }
+
+    const username = process.env.GPS51_USERNAME || "Nabil Boallal";
+    const monitorRes = await postJson(
+      `${GPS51_BASE_URL}?action=querymonitorlist&token=${token}&serverid=${serverId}`,
+      { username }
+    );
+    if (monitorRes.status !== 0) return;
+
+    for (const group of monitorRes.groups || []) {
+      for (const dev of group.devices || []) {
+        const devId = String(dev.deviceid).trim();
+        if (!devId) continue;
+        try {
+          const trackRes = await postJson(
+            `${GPS51_BASE_URL}?action=querytracks&token=${token}&serverid=${serverId}`,
+            {
+              deviceid: devId,
+              begintime: `${todayStr} 00:00:00`,
+              endtime: `${todayStr} 23:59:59`,
+              timezone: 2,
+            }
+          );
+          const records = trackRes?.records || [];
+          let todayKm = 0;
+          if (records.length > 1) {
+            const firstDist = records[0].totaldistance;
+            const lastDist = records[records.length - 1].totaldistance;
+            if (firstDist && lastDist && lastDist >= firstDist) {
+              todayKm = (lastDist - firstDist) / 1000;
+            }
+            if (todayKm === 0) {
+              let haversineSum = 0;
+              const R = 6371;
+              for (let i = 1; i < records.length; i++) {
+                const p1 = records[i - 1];
+                const p2 = records[i];
+                const dLat = ((p2.callat - p1.callat) * Math.PI) / 180;
+                const dLon = ((p2.callon - p1.callon) * Math.PI) / 180;
+                const a =
+                  Math.sin(dLat / 2) ** 2 +
+                  Math.cos((p1.callat * Math.PI) / 180) *
+                    Math.cos((p2.callat * Math.PI) / 180) *
+                    Math.sin(dLon / 2) ** 2;
+                haversineSum += 2 * R * Math.asin(Math.sqrt(a));
+              }
+              todayKm = haversineSum;
+            }
+          }
+          const roundedTodayKm = Math.round(todayKm * 100) / 100;
+          deviceTodayKmMap.set(devId, roundedTodayKm);
+
+          await prisma.vehicle.updateMany({
+            where: { deviceId: devId },
+            data: { todayKm: roundedTodayKm },
+          });
+        } catch {
+          // Ignore individual track failure
+        }
+      }
+    }
+    console.log(`[GPS51 Cloud] Synced today distance for ${deviceTodayKmMap.size} devices`);
+  } catch (err: any) {
+    console.warn(`[GPS51 Cloud] Could not sync today distances:`, err.message);
+  }
+}
+
 export async function pollGps51LivePositions(): Promise<void> {
   if (isPolling) return;
   isPolling = true;
@@ -315,6 +403,29 @@ export async function pollGps51LivePositions(): Promise<void> {
       }
 
       if (!isNaN(lat) && !isNaN(lng) && lat !== 0 && lng !== 0) {
+        // Fallback safely if devicetime is 0 so it never reverts to 1970
+        const rawTime =
+          r.devicetime && r.devicetime !== 0 && r.devicetime !== "0"
+            ? r.devicetime
+            : r.updatetime || r.arrivedtime || r.validpoistiontime;
+        const recordedAt = parseGps51Time(rawTime);
+
+        // Real odometer from GPS51 (totaldistance or mileage in meters)
+        const rawDistanceMeters = Number(r.totaldistance ?? r.mileage ?? 0);
+        const totalKm =
+          rawDistanceMeters > 0 ? Math.round(rawDistanceMeters / 1000) : undefined;
+
+        // Telemetry: Voltage (exvoltage in 100ths of Volt e.g. 1300 = 13.0V), Signal %, Satellites
+        const rawExVoltage = Number(r.exvoltage ?? 0);
+        const voltage =
+          rawExVoltage > 0 ? Math.round((rawExVoltage / 100) * 10) / 10 : undefined;
+        const signalPercent =
+          Number(r.rxlevel ?? 0) > 0 ? Math.min(100, Math.max(0, Number(r.rxlevel))) : undefined;
+        const satellites =
+          Number(r.gpsvalidnum ?? -1) >= 0 ? Number(r.gpsvalidnum) : undefined;
+
+        const todayKm = deviceTodayKmMap.get(devId);
+
         const result = await processGpsPing({
           deviceId: devId,
           latitude: lat,
@@ -325,7 +436,12 @@ export async function pollGps51LivePositions(): Promise<void> {
           engineOn: isAccOn || isMoving,
           isValid: true,
           markOnline: !isOffline,
-          recordedAt: parseGps51Time(r.devicetime ?? r.updatetime ?? r.arrivedtime),
+          recordedAt,
+          currentKm: totalKm,
+          todayKm,
+          voltage,
+          signalPercent,
+          satellites,
         });
         live++;
         if (result.pointId) saved++;
@@ -355,7 +471,9 @@ export function startGps51SyncService(intervalSeconds = 15): void {
     `[GPS51 Cloud] Starting live cloud sync service (polling every ${intervalSeconds}s)...`
   );
 
-  syncVehiclesFromGps51().then(() => pollGps51LivePositions());
+  syncVehiclesFromGps51()
+    .then(() => syncTodayDistancesFromGps51())
+    .then(() => pollGps51LivePositions());
 
   if (pollerTimer) clearInterval(pollerTimer);
   pollerTimer = setInterval(() => {
@@ -363,8 +481,8 @@ export function startGps51SyncService(intervalSeconds = 15): void {
   }, intervalSeconds * 1000);
 
   setInterval(() => {
-    syncVehiclesFromGps51();
-  }, 30 * 60 * 1000);
+    syncVehiclesFromGps51().then(() => syncTodayDistancesFromGps51());
+  }, 10 * 60 * 1000);
 }
 
 export async function fetchGps51HistoricalTracks(
