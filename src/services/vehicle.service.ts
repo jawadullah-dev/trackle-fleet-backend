@@ -28,7 +28,6 @@ function ensureCompanyAdmin(user: JwtPayload) {
 
 export async function listVehicles(args: ListArgs) {
   ensureCompanyAdmin(args.user);
-  await triggerGps51SyncIfNeeded().catch(() => {});
   const companyId = await resolveCompanyForActor(args.user);
 
   const where: Prisma.VehicleWhereInput = {
@@ -77,7 +76,8 @@ export async function listVehicles(args: ListArgs) {
 
 export async function listLiveVehicles(actor: JwtPayload) {
   ensureCompanyAdmin(actor);
-  await triggerGps51SyncIfNeeded().catch(() => {});
+  // Non-blocking background sync: query returns in <20ms while fresh GPS pings stream via Socket.IO
+  void triggerGps51SyncIfNeeded().catch(() => {});
   const companyId = await resolveCompanyForActor(actor);
 
   const rawVehicles = await prisma.vehicle.findMany({
@@ -135,7 +135,6 @@ export async function listLiveVehicles(actor: JwtPayload) {
 
 export async function getVehicle(id: string, actor: JwtPayload) {
   ensureCompanyAdmin(actor);
-  await triggerGps51SyncIfNeeded().catch(() => {});
   const companyId = await resolveCompanyForActor(actor);
 
   const vehicle = await prisma.vehicle.findUnique({
@@ -371,7 +370,7 @@ export async function deleteVehicle(id: string, actor: JwtPayload) {
 
 export async function listMapPins(actor: JwtPayload) {
   ensureCompanyAdmin(actor);
-  await triggerGps51SyncIfNeeded().catch(() => {});
+  void triggerGps51SyncIfNeeded().catch(() => {});
   const companyId = await resolveCompanyForActor(actor);
 
   const vehicles = await prisma.vehicle.findMany({

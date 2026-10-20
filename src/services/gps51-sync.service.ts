@@ -359,25 +359,34 @@ export async function syncTodayDistancesFromGps51(): Promise<void> {
 
 let lastJitSyncTime = 0;
 const JIT_POLL_COOLDOWN_MS = 5000;
+let currentSyncPromise: Promise<void> | null = null;
 
 /**
  * Triggers an on-demand poll of GPS51 live positions if enough time has passed.
- * Used for Vercel Serverless / JIT sync on incoming dashboard requests.
+ * Deduplicates in-flight requests and respects a 5s cooldown.
  */
 export async function triggerGps51SyncIfNeeded(): Promise<void> {
   const isEnabled = process.env.GPS51_ENABLED !== "false";
   if (!isEnabled) return;
   const now = Date.now();
   if (now - lastJitSyncTime < JIT_POLL_COOLDOWN_MS) return;
+  if (currentSyncPromise) return currentSyncPromise;
+
   lastJitSyncTime = now;
-  try {
-    if (deviceTodayKmMap.size === 0) {
-      syncTodayDistancesFromGps51().catch(() => {});
+  currentSyncPromise = (async () => {
+    try {
+      if (deviceTodayKmMap.size === 0) {
+        syncTodayDistancesFromGps51().catch(() => {});
+      }
+      await pollGps51LivePositions();
+    } catch (err: any) {
+      console.warn("[GPS51 Sync] Poll error:", err?.message ?? err);
+    } finally {
+      currentSyncPromise = null;
     }
-    await pollGps51LivePositions();
-  } catch (err: any) {
-    console.warn("[Vercel JIT Sync] Poll error:", err?.message ?? err);
-  }
+  })();
+
+  return currentSyncPromise;
 }
 
 export async function pollGps51LivePositions(): Promise<void> {
