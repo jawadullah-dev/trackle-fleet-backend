@@ -31,10 +31,10 @@ async function bootstrap() {
     console.warn("Could not start stale vehicle checker:", err.message);
   }
 
-  // Start GPS51 Cloud Live Sync (polls real-time vehicle positions from gps51.com)
+  // Start GPS51 Cloud Live Sync (polls real-time vehicle positions from gps51.com every 1s)
   try {
     const { startGps51SyncService } = require("./services/gps51-sync.service");
-    startGps51SyncService(15);
+    startGps51SyncService(1);
   } catch (err: any) {
     console.warn("Could not start GPS51 Cloud sync service:", err.message);
   }

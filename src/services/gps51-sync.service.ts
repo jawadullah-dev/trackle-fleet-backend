@@ -30,7 +30,7 @@ function postJson(url: string, data: any): Promise<any> {
           "Content-Length": Buffer.byteLength(bodyStr),
           "User-Agent": "TrackFleet-Server/1.0",
         },
-        timeout: 15000,
+        timeout: 5000,
       },
       (res) => {
         let raw = "";
@@ -517,15 +517,19 @@ export async function pollGps51LivePositions(): Promise<void> {
   }
 }
 
-export function startGps51SyncService(intervalSeconds = 15): void {
+export function startGps51SyncService(intervalSeconds = 1): void {
   const isEnabled = process.env.GPS51_ENABLED !== "false";
   if (!isEnabled) {
     console.log("[GPS51 Cloud] GPS51 Cloud sync is disabled by config");
     return;
   }
 
+  const effectiveIntervalSec = Number(
+    process.env.GPS51_SYNC_INTERVAL_SEC || intervalSeconds || 1
+  );
+
   console.log(
-    `[GPS51 Cloud] Starting live cloud sync service (polling every ${intervalSeconds}s)...`
+    `[GPS51 Cloud] Starting live cloud sync service (polling every ${effectiveIntervalSec}s)...`
   );
 
   syncVehiclesFromGps51()
@@ -535,7 +539,7 @@ export function startGps51SyncService(intervalSeconds = 15): void {
   if (pollerTimer) clearInterval(pollerTimer);
   pollerTimer = setInterval(() => {
     pollGps51LivePositions();
-  }, intervalSeconds * 1000);
+  }, effectiveIntervalSec * 1000);
 
   setInterval(() => {
     syncVehiclesFromGps51().then(() => syncTodayDistancesFromGps51());
